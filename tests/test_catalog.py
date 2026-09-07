@@ -182,7 +182,7 @@ def test_worker_uses_selected_subfolder(tmp_path,monkeypatch):
     assert worker.selected_scan_root()==selected.resolve()
 
 
-def fake_previews(path,meta,preview_cache,key,thumbnail_cache=None,preview_edge=None):
+def fake_previews(path,meta,preview_cache,key,thumbnail_cache=None,preview_edge=None,preview_quality=88):
     for kind,root in [('preview',preview_cache),('thumb',thumbnail_cache or preview_cache)]:
         p=cache_file(root,key,kind);p.parent.mkdir(parents=True,exist_ok=True);Image.new('RGB',(30,20),'red').save(p,'JPEG')
 
@@ -220,7 +220,7 @@ def test_media_rebuilds_use_configured_paths_and_edge(tmp_path,monkeypatch):
     def fake_thumb(path,metadata,root,cache_key):
         out=cache_file(root,cache_key,'thumb');out.parent.mkdir(parents=True,exist_ok=True);out.write_bytes(b'thumb')
     edge_seen=[]
-    def fake_preview(path,metadata,root,cache_key,edge=None):
+    def fake_preview(path,metadata,root,cache_key,edge=None,quality=88):
         edge_seen.append(edge);out=cache_file(root,cache_key,'preview');out.parent.mkdir(parents=True,exist_ok=True);out.write_bytes(b'preview')
     monkeypatch.setattr(worker,'make_thumbnail',fake_thumb);monkeypatch.setattr(worker,'make_preview',fake_preview)
     worker.rebuild_thumbnails(thumb_job);worker.rebuild_previews(preview_job)
