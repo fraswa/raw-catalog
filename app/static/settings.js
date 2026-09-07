@@ -22,7 +22,7 @@ function formatBytes(value) {
 }
 function setActionsDisabled(disabled) {
   for (const id of ['saveFolder','thumbnailFolder','rebuildThumbnails','purgeThumbnails',
-                    'savePreviewFolder','previewFolder','previewEdge','rebuildPreviews','purgePreviews']) $(id).disabled = disabled;
+                    'savePreviewFolder','previewFolder','previewEdge','previewQuality','rebuildPreviews','purgePreviews']) $(id).disabled = disabled;
 }
 function showThumbnailSettings(data) {
   $('cacheRoot').textContent = data.cache_root;
@@ -38,12 +38,13 @@ function showThumbnailSettings(data) {
 function showPreviewSettings(data) {
   $('previewFolder').value = data.folder;
   $('previewEdge').value = String(data.preview_edge);
+  $('previewQuality').value = String(data.preview_quality);
   $('previewPath').textContent = data.path;
   $('previewFiles').textContent = nf.format(data.files);
   $('previewBytes').textContent = formatBytes(data.bytes);
   $('previewEligiblePhotos').textContent = nf.format(data.eligible_photos);
   $('previewEstimatedBytes').textContent = `≈ ${formatBytes(data.estimated_bytes)}`;
-  $('previewEstimateBasis').textContent = `Target max edge ${nf.format(data.preview_edge)} px. Estimate uses ${formatBytes(data.estimated_per_preview)} per preview (${data.estimate_basis}).`;
+  $('previewEstimateBasis').textContent = `Target max edge ${nf.format(data.preview_edge)} px · JPEG quality ${data.preview_quality}. Estimate uses ${formatBytes(data.estimated_per_preview)} per preview (${data.estimate_basis}).`;
 }
 async function loadSettings() {
   const [thumbnails, previews] = await Promise.all([api('/api/settings/thumbnails'), api('/api/settings/previews')]);
@@ -87,9 +88,13 @@ $('previewFolderForm').onsubmit = async event => {
   event.preventDefault(); clearError(); $('savePreviewFolder').disabled = true;
   $('previewActionMessage').textContent = 'Saving preview settings…';
   try {
-    const data = await api('/api/settings/previews', {method:'PUT', body:JSON.stringify({folder:$('previewFolder').value.trim(), preview_edge:Number($('previewEdge').value)})});
+    const data = await api('/api/settings/previews', {method:'PUT', body:JSON.stringify({
+      folder:$('previewFolder').value.trim(),
+      preview_edge:Number($('previewEdge').value),
+      preview_quality:Number($('previewQuality').value)
+    })});
     showPreviewSettings(data);
-    $('previewActionMessage').textContent = 'Preview destination/size saved. Rebuild previews to apply the selected size to all photos.';
+    $('previewActionMessage').textContent = 'Preview destination, size and quality saved. Rebuild previews to apply them to all existing previews.';
     await loadSettings();
   } catch (err) { $('previewActionMessage').textContent = ''; showError(err); }
   finally { $('savePreviewFolder').disabled = false; }
@@ -101,7 +106,7 @@ $('rebuildThumbnails').onclick = async () => {
   catch (err) { $('thumbnailActionMessage').textContent=''; showError(err); $('rebuildThumbnails').disabled=false; }
 };
 $('rebuildPreviews').onclick = async () => {
-  if (!confirm(`Rebuild all previews at ${$('previewEdge').value}px maximum edge?`)) return;
+  if (!confirm(`Rebuild all previews at ${$('previewEdge').value}px maximum edge and JPEG quality ${$('previewQuality').value}?`)) return;
   clearError(); $('rebuildPreviews').disabled = true; $('previewActionMessage').textContent = 'Preview rebuild queued…';
   try { await api('/api/cache/previews/rebuild',{method:'POST'}); clearTimeout(timer); await pollJob(); }
   catch (err) { $('previewActionMessage').textContent=''; showError(err); $('rebuildPreviews').disabled=false; }
@@ -113,7 +118,7 @@ $('purgeThumbnails').onclick = async () => {
   catch(err){$('thumbnailActionMessage').textContent='';showError(err);} finally{$('purgeThumbnails').disabled=false;}
 };
 $('purgePreviews').onclick = async () => {
-  if (!confirm('Delete generated previews in the current and legacy cache locations?')) return;
+  if (!confirm('Delete generated previews in the current and legacy cache locations? Missing previews will be regenerated when opened.')) return;
   clearError(); $('purgePreviews').disabled=true; $('previewActionMessage').textContent='Purging previews…';
   try { const data=await api('/api/cache/previews',{method:'DELETE'}); $('previewActionMessage').textContent=`Removed ${nf.format(data.removed)} previews (${formatBytes(data.bytes_removed)}).`; await loadSettings(); }
   catch(err){$('previewActionMessage').textContent='';showError(err);} finally{$('purgePreviews').disabled=false;}
