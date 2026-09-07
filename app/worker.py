@@ -6,16 +6,47 @@ import time
 from datetime import datetime
 from pathlib import Path
 from sqlalchemy import select, update
-from app.db import Session, Photo, Scan, init_db, now
+from app.db import Session, Photo, Scan, Setting, init_db, now
 from app.imaging import EXTENSIONS, metadata_batch, make_previews, cache_file
 
 log = logging.getLogger(__name__)
 CACHE = os.environ.get('CACHE_DIR', '/data/cache')
 ROOT = Path(os.environ.get('PHOTO_ROOT', '/photos')).absolute()
+SELECTED_FOLDER_KEY = 'selected_photo_folder'
 
 
 def digest(value):
     return hashlib.sha256(value.encode('utf-8', errors='surrogateescape')).hexdigest()
+
+
+def selected_scan_root():
+    with Session() as db:
+        setting = db.get(Setting, SELECTED_FOLDER_KEY)
+        relative = setting.value if setting else ''
+    requested = Path(relative)
+    if requested.is_absolute() or '..' in requested.parts:
+        raise RuntimeError('Configured photo folder is outside the photo root')
+    try:
+        base = ROOT.resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError(f'Photo root is unavailable: {ROOT}') from exc
+    current = base
+    for part in requested.parts:
+        if part in ('', '.'):
+            continue
+        candidate = current / part
+        if candidate.is_symlink():
+            raise RuntimeError(f'Configured photo folder contains a symbolic link: {candidate}')
+        current = candidate
+    try:
+        target = current.resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError(f'Selected photo folder is unavailable: {current}') from exc
+    if target != base and base not in target.parents:
+        raise RuntimeError('Configured photo folder is outside the photo root')
+    if not target.is_dir():
+        raise RuntimeError(f'Selected photo folder is not a directory: {target}')
+    return target
 
 
 def capture_date(meta):
@@ -124,10 +155,9 @@ def scan(job_id):
         force = job.force
         job.state, job.updated_at = 'running', now()
     try:
-        if not ROOT.is_dir() or ROOT.is_symlink():
-            raise RuntimeError(f'Photo root is unavailable or is a symlink: {ROOT}')
+        root = selected_scan_root()
         pending = []
-        for directory, directories, filenames in os.walk(ROOT, followlinks=False, onerror=walk_error):
+        for directory, directories, filenames in os.walk(root, followlinks=False, onerror=walk_error):
             directories[:] = [d for d in directories if not Path(directory, d).is_symlink()]
             report(directory)
             for filename in filenames:
