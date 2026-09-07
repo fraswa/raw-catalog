@@ -23,6 +23,7 @@ SELECTED_FOLDER_KEY = 'selected_photo_folder'
 SCAN_MODE_PREFIX = 'scan_mode:'
 SCAN_SKIP_PREVIEWS_PREFIX = 'scan_skip_previews:'
 SCAN_SKIP_IMPORTED_PREFIX = 'scan_skip_imported:'
+SCAN_SKIP_POST_STAT_PREFIX = 'scan_skip_post_stat:'
 SCAN_PARALLELISM_PREFIX = 'scan_parallelism:'
 PARALLELISM_VALUES = (1, 2, 4, 6, 8)
 
@@ -537,7 +538,8 @@ def create_app():
             return None
         return {name: getattr(job, name) for name in ('id', 'state', 'discovered', 'indexed', 'skipped', 'errors', 'current_path', 'message', 'cancel')} | {'updated_at': job.updated_at.isoformat() + 'Z'}
 
-    def queue_job(mode='scan', force=False, skip_previews=False, skip_imported=False, parallelism=1):
+    def queue_job(mode='scan', force=False, skip_previews=False, skip_imported=False,
+                  skip_post_stat=False, parallelism=1):
         if force and skip_imported:
             abort(400, 'Force re-index and Skip already imported cannot be enabled together')
         try:
@@ -566,6 +568,8 @@ def create_app():
                         db.add(Setting(key=SCAN_SKIP_PREVIEWS_PREFIX + str(job.id), value='1'))
                     if mode == 'scan' and skip_imported:
                         db.add(Setting(key=SCAN_SKIP_IMPORTED_PREFIX + str(job.id), value='1'))
+                    if mode == 'scan' and skip_post_stat:
+                        db.add(Setting(key=SCAN_SKIP_POST_STAT_PREFIX + str(job.id), value='1'))
                     if mode == 'scan':
                         db.add(Setting(key=SCAN_PARALLELISM_PREFIX + str(job.id), value=str(parallelism)))
                     result = serialize_scan(job)
@@ -603,6 +607,7 @@ def create_app():
         return jsonify(scan=queue_job('scan', force=data.get('force') is True,
                                       skip_previews=data.get('skip_previews') is True,
                                       skip_imported=data.get('skip_imported') is True,
+                                      skip_post_stat=data.get('skip_post_stat') is True,
                                       parallelism=data.get('parallelism', 1))), 202
 
     @app.post('/api/scan/cancel')

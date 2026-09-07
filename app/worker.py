@@ -8,7 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from sqlalchemy import select, update, func
 from app.db import Session, Photo, Scan, Setting, init_db, now
-from app.imaging import EXTENSIONS, metadata_batch, make_previews, make_thumbnail, make_preview, cache_file
+from app.imaging import (EXTENSIONS, metadata_batch, make_previews, make_thumbnail, make_preview,
+                         cache_file, close_exiftool_sessions)
 from app.storage import (cache_root, configured_thumbnail_folder, configured_preview_folder,
                          configured_preview_edge, configured_preview_quality,
                          resolve_thumbnail_root, resolve_preview_root)
@@ -20,6 +21,7 @@ SELECTED_FOLDER_KEY = 'selected_photo_folder'
 SCAN_MODE_PREFIX = 'scan_mode:'
 SCAN_SKIP_PREVIEWS_PREFIX = 'scan_skip_previews:'
 SCAN_SKIP_IMPORTED_PREFIX = 'scan_skip_imported:'
+SCAN_SKIP_POST_STAT_PREFIX = 'scan_skip_post_stat:'
 SCAN_PARALLELISM_PREFIX = 'scan_parallelism:'
 PARALLELISM_VALUES = (1, 2, 4, 6, 8)
 SCAN_BATCH_SIZE = 128
@@ -114,6 +116,12 @@ def job_skip_imported(job_id):
         return bool(setting and setting.value == '1')
 
 
+def job_skip_post_stat(job_id):
+    with Session() as db:
+        setting = db.get(Setting, SCAN_SKIP_POST_STAT_PREFIX + str(job_id))
+        return bool(setting and setting.value == '1')
+
+
 def job_parallelism(job_id):
     with Session() as db:
         setting = db.get(Setting, SCAN_PARALLELISM_PREFIX + str(job_id))
@@ -157,6 +165,7 @@ def scan(job_id):
         job.state, job.updated_at = 'running', now()
     skip_previews = job_skip_previews(job_id)
     skip_imported = job_skip_imported(job_id)
+    skip_post_stat = job_skip_post_stat(job_id)
     parallelism = job_parallelism(job_id)
 
     try:
@@ -181,9 +190,10 @@ def scan(job_id):
             except Exception as exc:
                 media_error = str(exc)[:2000]
                 log.warning('Generated media failed for %s: %s', path, exc)
-            after = path.stat()
-            if (stat.st_size, stat.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-                raise ValueError('File changed during indexing; retry next scan')
+            if not skip_post_stat:
+                after = path.stat()
+                if (stat.st_size, stat.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                    raise ValueError('File changed during indexing; retry next scan')
             return dict(path=path, path_hash=path_hash, stat=stat, meta=meta, camera=camera,
                         lens=lens, key=key, media_error=media_error)
 
@@ -300,6 +310,8 @@ def scan(job_id):
             notes.append('previews on demand')
         if skip_imported:
             notes.append('already imported paths skipped')
+        if skip_post_stat:
+            notes.append('fast SMB mode')
         notes.append(f'{parallelism} parallel worker' + ('s' if parallelism != 1 else ''))
         report(message='Scanning folders' + (f" ({', '.join(notes)})" if notes else ''), force=True)
         with ThreadPoolExecutor(max_workers=parallelism, thread_name_prefix='raw-index') as executor:
@@ -322,6 +334,8 @@ def scan(job_id):
             completion.append('previews will be generated when opened')
         if skip_imported:
             completion.append('existing source paths were skipped')
+        if skip_post_stat:
+            completion.append('post-read source verification was skipped')
         suffix = (' — ' + '; '.join(completion)) if completion else ''
         report(message=('Scan complete' if not counts['errors'] else 'Scan complete with errors; see worker logs') + suffix,
                force=True)
@@ -331,6 +345,8 @@ def scan(job_id):
     except Exception as exc:
         state, message = 'failed', str(exc)
         log.exception('Scan failed')
+    finally:
+        close_exiftool_sessions()
     with Session.begin() as db:
         job = db.get(Scan, job_id)
         for key, value in counts.items():
@@ -424,7 +440,8 @@ def job_mode(job_id):
 def clear_job_settings(job_id):
     with Session.begin() as db:
         for key in (SCAN_MODE_PREFIX + str(job_id), SCAN_SKIP_PREVIEWS_PREFIX + str(job_id),
-                    SCAN_SKIP_IMPORTED_PREFIX + str(job_id), SCAN_PARALLELISM_PREFIX + str(job_id)):
+                    SCAN_SKIP_IMPORTED_PREFIX + str(job_id), SCAN_SKIP_POST_STAT_PREFIX + str(job_id),
+                    SCAN_PARALLELISM_PREFIX + str(job_id)):
             setting = db.get(Setting, key)
             if setting:
                 db.delete(setting)

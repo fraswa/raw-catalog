@@ -254,3 +254,13 @@ def test_combined_preview_keeps_preview_optimized_but_thumbnail_fast(tmp_path, m
     imaging.make_previews(tmp_path / 'one.cr3', {}, tmp_path / 'previews', 'b' * 64,
                           tmp_path / 'thumbs', 1920, 88)
     assert calls == [(1920, 88, True), (480, 80, False)]
+
+
+def test_fast_smb_setting_is_recorded(client):
+    headers = {'X-CSRF-Token': client.csrf}
+    queued = client.post('/api/scan', json={'skip_post_stat': True, 'parallelism': 4}, headers=headers)
+    assert queued.status_code == 202
+    job_id = queued.json['scan']['id']
+    with Session() as db:
+        setting = db.get(Setting, f'scan_skip_post_stat:{job_id}')
+        assert setting is not None and setting.value == '1'
