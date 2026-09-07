@@ -68,27 +68,53 @@ def cache_file(cache, key, kind):
     return Path(cache) / key[:2] / (key + '-' + kind + '.jpg')
 
 
-def make_previews(path, metadata, cache, key):
+def _srgb(image):
+    profile = image.info.get('icc_profile')
+    if profile:
+        try:
+            return ImageCms.profileToProfile(image, ImageCms.ImageCmsProfile(io.BytesIO(profile)),
+                                             ImageCms.createProfile('sRGB'), outputMode='RGB')
+        except (OSError, ValueError, ImageCms.PyCMSError):
+            return image.convert('RGB')
+    return image.convert('RGB')
+
+
+def _save_scaled(image, output, edge, quality):
+    output.parent.mkdir(parents=True, exist_ok=True)
+    scaled = image.copy()
+    try:
+        scaled.thumbnail((edge, edge), Image.Resampling.LANCZOS)
+        temp = output.with_suffix('.tmp')
+        scaled.save(temp, 'JPEG', quality=quality, optimize=True)
+        temp.replace(output)
+    finally:
+        scaled.close()
+
+
+def make_thumbnail(path, metadata, thumbnail_cache, key):
     image = open_preview(path, metadata)
     try:
-        profile = image.info.get('icc_profile')
-        if profile:
-            try:
-                image = ImageCms.profileToProfile(image, ImageCms.ImageCmsProfile(io.BytesIO(profile)),
-                                                  ImageCms.createProfile('sRGB'), outputMode='RGB')
-            except (OSError, ValueError, ImageCms.PyCMSError):
-                image = image.convert('RGB')
-        else:
-            image = image.convert('RGB')
-        for kind, edge, quality in [('preview', int(os.environ.get('PREVIEW_EDGE', '2560')), 88),
-                                    ('thumb', 480, 80)]:
-            output = cache_file(cache, key, kind)
-            output.parent.mkdir(parents=True, exist_ok=True)
-            scaled = image.copy()
-            scaled.thumbnail((edge, edge), Image.Resampling.LANCZOS)
-            temp = output.with_suffix('.tmp')
-            scaled.save(temp, 'JPEG', quality=quality, optimize=True)
-            temp.replace(output)
-            scaled.close()
+        converted = _srgb(image)
+        try:
+            _save_scaled(converted, cache_file(thumbnail_cache, key, 'thumb'), 480, 80)
+        finally:
+            if converted is not image:
+                converted.close()
+    finally:
+        image.close()
+
+
+def make_previews(path, metadata, cache, key, thumbnail_cache=None):
+    thumbnail_cache = thumbnail_cache or cache
+    image = open_preview(path, metadata)
+    try:
+        converted = _srgb(image)
+        try:
+            _save_scaled(converted, cache_file(cache, key, 'preview'),
+                         int(os.environ.get('PREVIEW_EDGE', '2560')), 88)
+            _save_scaled(converted, cache_file(thumbnail_cache, key, 'thumb'), 480, 80)
+        finally:
+            if converted is not image:
+                converted.close()
     finally:
         image.close()
