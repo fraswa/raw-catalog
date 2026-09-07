@@ -101,13 +101,14 @@ def make_thumbnail(path, metadata, thumbnail_cache, key):
         image.close()
 
 
-def make_preview(path, metadata, preview_cache, key, edge=None):
+def make_preview(path, metadata, preview_cache, key, edge=None, quality=88):
     edge = int(edge or os.environ.get('PREVIEW_EDGE', '2560'))
+    quality = int(quality)
     image = open_preview(path, metadata)
     try:
         converted = _srgb(image)
         try:
-            _save_scaled(converted, cache_file(preview_cache, key, 'preview'), edge, 88)
+            _save_scaled(converted, cache_file(preview_cache, key, 'preview'), edge, quality)
         finally:
             if converted is not image:
                 converted.close()
@@ -115,14 +116,16 @@ def make_preview(path, metadata, preview_cache, key, edge=None):
         image.close()
 
 
-def make_previews(path, metadata, preview_cache, key, thumbnail_cache=None, preview_edge=None):
+def make_previews(path, metadata, preview_cache, key, thumbnail_cache=None, preview_edge=None,
+                  preview_quality=88):
     thumbnail_cache = thumbnail_cache or preview_cache
     edge = int(preview_edge or os.environ.get('PREVIEW_EDGE', '2560'))
+    quality = int(preview_quality)
     image = open_preview(path, metadata)
     try:
         converted = _srgb(image)
         try:
-            _save_scaled(converted, cache_file(preview_cache, key, 'preview'), edge, 88)
+            _save_scaled(converted, cache_file(preview_cache, key, 'preview'), edge, quality)
             _save_scaled(converted, cache_file(thumbnail_cache, key, 'thumb'), 480, 80)
         finally:
             if converted is not image:
