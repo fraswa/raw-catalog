@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>RAW Catalog Settings</title><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/controls.css"><link rel="stylesheet" href="/static/settings.css"><script defer src="/static/settings.js"></script></head>
+<body>
+<div id="settingsApp" hidden>
+<header><div class="brand"><span class="mark">R / C</span><div><strong>RAW Catalog</strong><span>Settings</span></div></div><div class="header-actions"><a class="button-link" href="/">Library</a><button id="signOut">Sign out</button></div></header>
+<main class="settings-main">
+<div class="title-row"><div><p class="eyebrow">SETTINGS</p><h1>Thumbnail storage</h1></div><span class="read-only">Originals remain read-only</span></div>
+<div id="settingsError" class="error" role="alert" hidden></div>
+<section class="settings-card">
+<div class="settings-heading"><div><p class="eyebrow">STORAGE</p><h2>Generated thumbnails</h2></div><span id="settingsState" class="state-pill">Ready</span></div>
+<p class="settings-copy">Thumbnails are stored separately from full previews. The folder must stay inside the app cache volume.</p>
+<div class="path-box"><span>App cache root</span><strong id="cacheRoot">/data/cache</strong></div>
+<form id="thumbnailFolderForm" class="settings-form"><label for="thumbnailFolder">Thumbnail folder inside app cache</label><div class="inline-form"><input id="thumbnailFolder" type="text" maxlength="1024" autocomplete="off" spellcheck="false" placeholder="thumbnails" required><button id="saveFolder" class="primary" type="submit">Change folder</button></div><p class="hint">Example: <code>thumbnails</code> or <code>cache/thumbs</code>. Absolute paths and <code>..</code> are rejected.</p></form>
+<div class="path-box"><span>Current thumbnail path</span><strong id="thumbnailPath">—</strong></div>
+<div class="stats-grid">
+<div class="stat"><span>Cached thumbnails</span><strong id="thumbnailFiles">—</strong></div>
+<div class="stat"><span>Current size</span><strong id="thumbnailBytes">—</strong></div>
+<div class="stat"><span>Catalog photos</span><strong id="eligiblePhotos">—</strong></div>
+<div class="stat"><span>Estimated full cache</span><strong id="estimatedBytes">—</strong></div>
+</div>
+<p id="estimateBasis" class="hint"></p>
+<div class="danger-row"><div><strong>Rebuild thumbnails</strong><span>Regenerates only 480px thumbnails from indexed originals. Metadata and full previews are not rebuilt.</span></div><button id="rebuildThumbnails" class="primary">Rebuild thumbnails</button></div>
+<div class="danger-row"><div><strong>Purge thumbnails</strong><span>Deletes generated thumbnail JPEGs from current and legacy thumbnail locations. Originals and full previews are untouched.</span></div><button id="purgeThumbnails">Purge thumbnails</button></div>
+<p id="actionMessage" class="action-message"></p>
+</section>
+<section class="settings-card">
+<div class="settings-heading"><div><p class="eyebrow">WORKER</p><h2>Current job</h2></div></div>
+<p id="jobMessage" class="settings-copy">No active scan or rebuild.</p>
+<div class="progress-line"><span id="jobCounts"></span><span id="jobPath" class="path"></span></div>
+<button id="cancelJob" hidden>Cancel current job</button>
+</section>
+</main>
+<footer>RAW Catalog <span>Thumbnail storage is managed inside the app cache volume</span></footer>
+</div>
+</body></html>
