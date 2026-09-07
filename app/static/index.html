@@ -4,7 +4,7 @@
 <body>
 <section id="login" class="login" hidden><form id="loginForm" class="login-card"><div class="mark">R / C</div><p class="eyebrow">YOUR PHOTO ARCHIVE</p><h1>RAW Catalog</h1><label for="password">Catalog password</label><input id="password" type="password" autocomplete="current-password" required><button class="primary" type="submit">Open catalog</button><p id="loginError" role="alert"></p></form></section>
 <div id="application" hidden>
-<header><div class="brand"><span class="mark">R / C</span><div><strong>RAW Catalog</strong><span>Photo archive</span></div></div><div class="header-actions"><button id="scanButton" class="primary">Index photos</button><button id="signOut">Sign out</button></div></header>
+<header><div class="brand"><span class="mark">R / C</span><div><strong>RAW Catalog</strong><span>Photo archive</span></div></div><div class="header-actions"><button id="scanButton" class="primary">Index photos</button><a class="button-link" href="/settings">Settings</a><button id="signOut">Sign out</button></div></header>
 <main>
 <div class="title-row"><div><p class="eyebrow">LIBRARY</p><h1>All photographs<span id="count">—</span></h1></div><span class="read-only">Originals are read-only</span></div>
 <form id="filters" class="filters"><div><label for="camera">Camera</label><select id="camera"><option value="">All cameras</option></select></div><div><label for="lens">Lens</label><select id="lens"><option value="">All lenses</option></select></div><div class="search"><label for="query">Filename or folder</label><input id="query" type="search" placeholder="Search your archive…"></div><button type="button" id="reset">Clear filters</button></form>
@@ -17,8 +17,7 @@
 <p id="scanMessage">Run a scan to add new or changed photographs.</p><p id="scanCounts"></p><p id="scanPath" class="path"></p>
 <div class="folder-control"><div><span class="control-label">Photo folder</span><strong id="selectedFolder">/photos</strong></div><button id="browseFolder">Browse folders</button></div>
 <div id="folderBrowser" class="folder-browser" hidden><div class="folder-toolbar"><button id="folderUp">Up</button><strong id="folderCurrent">/photos</strong><button id="closeFolderBrowser">Close</button></div><div id="folderList" class="folder-list"></div><div class="folder-select-row"><button id="selectFolder" class="primary">Use this folder</button></div></div>
-<p id="cacheMessage" class="path"></p>
-<div class="scan-actions"><label class="check"><input id="force" type="checkbox"> Rebuild metadata and previews for every photo</label><div class="scan-buttons"><button id="purgeThumbnails">Purge thumbnails</button><button id="cancelScan" hidden>Cancel scan</button></div></div>
+<div class="scan-actions"><label class="check"><input id="force" type="checkbox"> Rebuild metadata and previews for every photo</label><button id="cancelScan" hidden>Cancel scan</button></div>
 </div></details>
 </main><footer>RAW Catalog <span>Camera + lens filters match together</span></footer>
 </div>
