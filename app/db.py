@@ -1,6 +1,7 @@
 import os
 from datetime import datetime, timezone
-from sqlalchemy import create_engine, String, Text, Integer, BigInteger, DateTime, JSON, Index, Boolean
+from sqlalchemy import create_engine, String, Text, Integer, BigInteger, DateTime, JSON, Index, Boolean, text
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -49,12 +50,30 @@ class Scan(Base):
 class Setting(Base):
     __tablename__ = 'settings'
     key: Mapped[str] = mapped_column(String(100), primary_key=True)
-    value: Mapped[str] = mapped_column(Text, default='')
+    # MariaDB TEXT is limited to 64 KiB. Expanded statistics can easily exceed that,
+    # so use LONGTEXT on MySQL/MariaDB while retaining normal TEXT elsewhere.
+    value: Mapped[str] = mapped_column(Text().with_variant(LONGTEXT(), 'mysql'), default='')
 
 
 engine = create_engine(os.environ.get('DATABASE_URL', 'sqlite:////tmp/raw-catalog-dev.db'), pool_pre_ping=True)
 Session = sessionmaker(engine, expire_on_commit=False)
 
 
+def _upgrade_mysql_schema():
+    if engine.dialect.name != 'mysql':
+        return
+    with engine.begin() as connection:
+        data_type = connection.scalar(text("""
+            SELECT DATA_TYPE
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'settings'
+              AND COLUMN_NAME = 'value'
+        """))
+        if data_type and str(data_type).lower() != 'longtext':
+            connection.execute(text('ALTER TABLE settings MODIFY value LONGTEXT NOT NULL'))
+
+
 def init_db():
     Base.metadata.create_all(engine)
+    _upgrade_mysql_schema()
