@@ -22,6 +22,9 @@ SCAN_SKIP_PREVIEWS_PREFIX = 'scan_skip_previews:'
 SCAN_SKIP_IMPORTED_PREFIX = 'scan_skip_imported:'
 SCAN_PARALLELISM_PREFIX = 'scan_parallelism:'
 PARALLELISM_VALUES = (1, 2, 4, 6, 8)
+SCAN_BATCH_SIZE = 128
+DB_WRITE_BATCH_SIZE = 16
+PROGRESS_INTERVAL = 0.5
 
 
 def digest(value):
@@ -124,11 +127,15 @@ def job_parallelism(job_id):
 def scan(job_id):
     counts = dict(discovered=0, indexed=0, skipped=0, errors=0)
     last_message = 'Scanning folders'
+    last_report_at = 0.0
 
-    def report(path='', message=None):
-        nonlocal last_message
+    def report(path='', message=None, force=False):
+        nonlocal last_message, last_report_at
         if message:
             last_message = message
+        current = time.monotonic()
+        if not force and current - last_report_at < PROGRESS_INTERVAL:
+            return
         with Session.begin() as db:
             job = db.get(Scan, job_id)
             if job.cancel:
@@ -138,10 +145,11 @@ def scan(job_id):
             job.current_path = str(path)
             job.message = last_message
             job.updated_at = now()
+        last_report_at = current
 
     def walk_error(error):
         counts['errors'] += 1
-        report(message=f'Folder could not be read: {error}')
+        report(message=f'Folder could not be read: {error}', force=True)
 
     with Session.begin() as db:
         job = db.get(Scan, job_id)
@@ -179,24 +187,47 @@ def scan(job_id):
             return dict(path=path, path_hash=path_hash, stat=stat, meta=meta, camera=camera,
                         lens=lens, key=key, media_error=media_error)
 
-        def store_photo(result):
-            path = result['path']
-            stat = result['stat']
+        def write_results(results):
+            hashes = [result['path_hash'] for result in results]
             with Session.begin() as db:
-                photo = db.scalar(select(Photo).where(Photo.path_hash == result['path_hash']))
-                if photo is None:
-                    photo = Photo(path_hash=result['path_hash'])
-                    db.add(photo)
-                photo.path, photo.filename = str(path), path.name
-                photo.size, photo.mtime_ns = stat.st_size, stat.st_mtime_ns
-                photo.camera, photo.lens = result['camera'], result['lens']
-                photo.taken_at, photo.metadata_json = capture_date(result['meta']), result['meta']
-                photo.cache_key = result['key'] if not result['media_error'] else None
-                photo.preview_error = result['media_error']
-                photo.indexed_at = now()
-            counts['indexed'] += 1
-            if result['media_error']:
-                counts['errors'] += 1
+                existing = {photo.path_hash: photo for photo in db.scalars(
+                    select(Photo).where(Photo.path_hash.in_(hashes)))}
+                stamp = now()
+                for result in results:
+                    path = result['path']
+                    stat = result['stat']
+                    photo = existing.get(result['path_hash'])
+                    if photo is None:
+                        photo = Photo(path_hash=result['path_hash'])
+                        db.add(photo)
+                    photo.path, photo.filename = str(path), path.name
+                    photo.size, photo.mtime_ns = stat.st_size, stat.st_mtime_ns
+                    photo.camera, photo.lens = result['camera'], result['lens']
+                    photo.taken_at, photo.metadata_json = capture_date(result['meta']), result['meta']
+                    photo.cache_key = result['key'] if not result['media_error'] else None
+                    photo.preview_error = result['media_error']
+                    photo.indexed_at = stamp
+
+        def store_photos(results):
+            if not results:
+                return
+            try:
+                write_results(results)
+                counts['indexed'] += len(results)
+                counts['errors'] += sum(1 for result in results if result['media_error'])
+                return
+            except Exception as exc:
+                log.warning('Batch database write failed; retrying photos individually: %s', exc)
+            # Preserve as much completed work as possible if a single bad row breaks a batch.
+            for result in results:
+                try:
+                    write_results([result])
+                    counts['indexed'] += 1
+                    if result['media_error']:
+                        counts['errors'] += 1
+                except Exception as exc:
+                    counts['errors'] += 1
+                    log.exception('Could not store indexed photo %s: %s', result['path'], exc)
 
         def process(paths, executor):
             pending = []
@@ -232,24 +263,31 @@ def scan(job_id):
                 metadata = metadata_batch([p for p, _, _ in pending])
             except Exception as exc:
                 counts['errors'] += len(pending)
-                report(message=f'Metadata batch failed: {exc}')
+                report(message=f'Metadata batch failed: {exc}', force=True)
                 return
 
             futures = {}
             for path, path_hash, stat in pending:
                 item = (path, path_hash, stat, metadata.get(str(path)))
                 futures[executor.submit(render_photo, item)] = path
+            completed = []
             try:
                 for future in as_completed(futures):
                     path = futures[future]
                     report(path)
                     try:
-                        store_photo(future.result())
+                        completed.append(future.result())
+                        if len(completed) >= DB_WRITE_BATCH_SIZE:
+                            store_photos(completed)
+                            completed = []
                     except Exception as exc:
                         counts['errors'] += 1
                         report(path, f'Could not index file: {exc}')
                         log.exception('Could not index %s', path)
+                store_photos(completed)
             except InterruptedError:
+                # Persist renders that already finished before honoring cancellation.
+                store_photos(completed)
                 for future in futures:
                     future.cancel()
                 raise
@@ -263,7 +301,7 @@ def scan(job_id):
         if skip_imported:
             notes.append('already imported paths skipped')
         notes.append(f'{parallelism} parallel worker' + ('s' if parallelism != 1 else ''))
-        report(message='Scanning folders' + (f" ({', '.join(notes)})" if notes else ''))
+        report(message='Scanning folders' + (f" ({', '.join(notes)})" if notes else ''), force=True)
         with ThreadPoolExecutor(max_workers=parallelism, thread_name_prefix='raw-index') as executor:
             for directory, directories, filenames in os.walk(root, followlinks=False, onerror=walk_error):
                 directories[:] = [d for d in directories if not Path(directory, d).is_symlink()]
@@ -274,7 +312,7 @@ def scan(job_id):
                         continue
                     counts['discovered'] += 1
                     pending.append(path)
-                    if len(pending) >= 64:
+                    if len(pending) >= SCAN_BATCH_SIZE:
                         process(pending, executor)
                         pending = []
             if pending:
@@ -285,7 +323,8 @@ def scan(job_id):
         if skip_imported:
             completion.append('existing source paths were skipped')
         suffix = (' — ' + '; '.join(completion)) if completion else ''
-        report(message=('Scan complete' if not counts['errors'] else 'Scan complete with errors; see worker logs') + suffix)
+        report(message=('Scan complete' if not counts['errors'] else 'Scan complete with errors; see worker logs') + suffix,
+               force=True)
         state, message = 'done', last_message
     except InterruptedError as exc:
         state, message = 'cancelled', str(exc)
