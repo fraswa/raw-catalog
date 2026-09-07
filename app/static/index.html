@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>RAW Catalog</title><link rel="stylesheet" href="/static/style.css"><script defer src="/static/app.js"></script></head>
+<body>
+<section id="login" class="login" hidden><form id="loginForm" class="login-card"><div class="mark">R / C</div><p class="eyebrow">YOUR PHOTO ARCHIVE</p><h1>RAW Catalog</h1><label for="password">Catalog password</label><input id="password" type="password" autocomplete="current-password" required><button class="primary" type="submit">Open catalog</button><p id="loginError" role="alert"></p></form></section>
+<div id="application" hidden>
+<header><div class="brand"><span class="mark">R / C</span><div><strong>RAW Catalog</strong><span>Photo archive</span></div></div><div class="header-actions"><button id="scanButton" class="primary">Index photos</button><button id="signOut">Sign out</button></div></header>
+<main>
+<div class="title-row"><div><p class="eyebrow">LIBRARY</p><h1>All photographs<span id="count">—</span></h1></div><span class="read-only">Originals are read-only</span></div>
+<form id="filters" class="filters"><div><label for="camera">Camera</label><select id="camera"><option value="">All cameras</option></select></div><div><label for="lens">Lens</label><select id="lens"><option value="">All lenses</option></select></div><div class="search"><label for="query">Filename or folder</label><input id="query" type="search" placeholder="Search your archive…"></div><button type="button" id="reset">Clear filters</button></form>
+<div class="results-bar"><p id="summary" aria-live="polite">Loading photographs…</p><span>Newest indexed first</span></div>
+<div id="error" class="error" role="alert" hidden></div>
+<section id="grid" class="grid" aria-label="Matching photographs"></section>
+<div id="empty" class="empty" hidden><span class="empty-icon">[ &nbsp; ]</span><h2 id="emptyTitle">Your archive starts here</h2><p id="emptyText">Index your photo folder to browse cameras, lenses and photographs.</p></div>
+<div class="load-row"><button id="loadMore" hidden>Load more photographs</button></div>
+<details class="scan-panel" id="scanPanel"><summary>Indexer <span id="scanState">Ready</span></summary><div class="scan-body"><p id="scanMessage">Run a scan to add new or changed photographs.</p><p id="scanCounts"></p><p id="scanPath" class="path"></p><div class="scan-actions"><label class="check"><input id="force" type="checkbox"> Rebuild metadata and previews for every photo</label><button id="cancelScan" hidden>Cancel scan</button></div></div></details>
+</main><footer>RAW Catalog <span>Camera + lens filters match together</span></footer>
+</div>
+<dialog id="viewer" aria-labelledby="viewerTitle"><div class="viewer-layout"><div class="viewer-top"><div><strong id="viewerTitle"></strong><span id="viewerPosition"></span></div><div><button id="fullScreen" title="Enter full screen">Full screen</button><button id="closeViewer" aria-label="Close preview">Close ×</button></div></div><div class="stage"><button id="previous" class="nav prev" aria-label="Previous photo">‹</button><img id="previewImage" alt=""><p id="previewMessage" hidden></p><button id="next" class="nav next" aria-label="Next photo">›</button></div><div class="viewer-bottom"><div><strong id="viewerCamera"></strong><span id="viewerLens"></span></div><p id="exposure"></p><details><summary>File details</summary><p id="viewerPath" class="path"></p><pre id="metadata"></pre></details></div></div></dialog>
+</body></html>

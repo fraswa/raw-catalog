@@ -1,0 +1,63 @@
+x-app: &app
+  build: .
+  image: raw-catalog:local
+  restart: unless-stopped
+  environment: &environment
+    DATABASE_URL: mysql+pymysql://catalog:${DB_PASSWORD:?Run setup.py}@db:3306/rawcatalog?charset=utf8mb4
+    SECRET_KEY: ${SECRET_KEY:?Run setup.py}
+    CATALOG_PASSWORD: ${CATALOG_PASSWORD:?Run setup.py}
+    PHOTO_ROOT: /photos
+    CACHE_DIR: /data/cache
+    COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    PREVIEW_EDGE: ${PREVIEW_EDGE:-2560}
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+services:
+  db:
+    image: mariadb:11.4
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: rawcatalog
+      MARIADB_USER: catalog
+      MARIADB_PASSWORD: ${DB_PASSWORD:?Run setup.py}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Run setup.py}
+    volumes:
+      - database:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+  web:
+    <<: *app
+    ports:
+      - '${BIND_IP:-0.0.0.0}:${WEB_PORT:-8080}:8000'
+    volumes:
+      - previews:/data/cache:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.worker"]
+    volumes:
+      - previews:/data/cache
+      - type: bind
+        source: ${PHOTO_PATH:?Run setup.py}
+        target: /photos
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      web:
+        condition: service_healthy
+volumes:
+  database:
+  previews:
