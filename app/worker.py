@@ -81,7 +81,7 @@ def labels(meta):
 def scan(job_id):
     counts = dict(discovered=0, indexed=0, skipped=0, errors=0)
     last_message = 'Scanning folders'
-    thumbnail_cache = current_thumbnail_root()
+    thumbnail_cache = None
 
     def report(path='', message=None):
         nonlocal last_message
@@ -170,6 +170,7 @@ def scan(job_id):
         force = job.force
         job.state, job.updated_at = 'running', now()
     try:
+        thumbnail_cache = current_thumbnail_root()
         root = selected_scan_root()
         pending = []
         for directory, directories, filenames in os.walk(root, followlinks=False, onerror=walk_error):
@@ -204,7 +205,7 @@ def scan(job_id):
 def rebuild_thumbnails(job_id):
     counts = dict(discovered=0, indexed=0, skipped=0, errors=0)
     last_message = 'Rebuilding thumbnails'
-    thumbnail_cache = current_thumbnail_root()
+    thumbnail_cache = None
 
     def report(path='', message=None):
         nonlocal last_message
@@ -224,6 +225,7 @@ def rebuild_thumbnails(job_id):
         job = db.get(Scan, job_id)
         job.state, job.message, job.updated_at = 'running', last_message, now()
     try:
+        thumbnail_cache = current_thumbnail_root()
         with Session() as db:
             counts['discovered'] = db.scalar(select(func.count()).select_from(Photo).where(Photo.cache_key.is_not(None))) or 0
         report(message=f'Rebuilding {counts["discovered"]} thumbnails')
