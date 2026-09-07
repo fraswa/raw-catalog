@@ -5,14 +5,16 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 from app.db import Session, Photo, Scan, Setting, init_db, now
-from app.imaging import EXTENSIONS, metadata_batch, make_previews, cache_file
+from app.imaging import EXTENSIONS, metadata_batch, make_previews, make_thumbnail, cache_file
+from app.storage import configured_thumbnail_folder, resolve_thumbnail_root
 
 log = logging.getLogger(__name__)
 CACHE = os.environ.get('CACHE_DIR', '/data/cache')
 ROOT = Path(os.environ.get('PHOTO_ROOT', '/photos')).absolute()
 SELECTED_FOLDER_KEY = 'selected_photo_folder'
+SCAN_MODE_PREFIX = 'scan_mode:'
 
 
 def digest(value):
@@ -49,6 +51,15 @@ def selected_scan_root():
     return target
 
 
+def current_thumbnail_root():
+    with Session() as db:
+        relative = configured_thumbnail_folder(db)
+    try:
+        return resolve_thumbnail_root(relative, create=True)
+    except (ValueError, RuntimeError) as exc:
+        raise RuntimeError(f'Invalid thumbnail folder: {exc}') from exc
+
+
 def capture_date(meta):
     for tag in ('DateTimeOriginal', 'CreateDate'):
         try:
@@ -70,6 +81,7 @@ def labels(meta):
 def scan(job_id):
     counts = dict(discovered=0, indexed=0, skipped=0, errors=0)
     last_message = 'Scanning folders'
+    thumbnail_cache = current_thumbnail_root()
 
     def report(path='', message=None):
         nonlocal last_message
@@ -98,7 +110,10 @@ def scan(job_id):
             try:
                 stat = path.stat()
                 old = existing.get(path_hash)
-                if old and not force and old.size == stat.st_size and old.mtime_ns == stat.st_mtime_ns and old.cache_key and not old.preview_error and all(cache_file(CACHE, old.cache_key, k).is_file() for k in ('thumb', 'preview')):
+                cache_ok = (old and old.cache_key and not old.preview_error and
+                            cache_file(CACHE, old.cache_key, 'preview').is_file() and
+                            cache_file(thumbnail_cache, old.cache_key, 'thumb').is_file())
+                if old and not force and old.size == stat.st_size and old.mtime_ns == stat.st_mtime_ns and cache_ok:
                     counts['skipped'] += 1
                 else:
                     pending.append((path, path_hash, stat))
@@ -124,7 +139,7 @@ def scan(job_id):
                 key = digest(f'{path_hash}:{stat.st_mtime_ns}:{stat.st_size}')
                 preview_error = None
                 try:
-                    make_previews(path, meta, CACHE, key)
+                    make_previews(path, meta, CACHE, key, thumbnail_cache)
                 except Exception as exc:
                     preview_error = str(exc)[:2000]
                     counts['errors'] += 1
@@ -186,6 +201,80 @@ def scan(job_id):
         job.current_path = ''
 
 
+def rebuild_thumbnails(job_id):
+    counts = dict(discovered=0, indexed=0, skipped=0, errors=0)
+    last_message = 'Rebuilding thumbnails'
+    thumbnail_cache = current_thumbnail_root()
+
+    def report(path='', message=None):
+        nonlocal last_message
+        if message:
+            last_message = message
+        with Session.begin() as db:
+            job = db.get(Scan, job_id)
+            if job.cancel:
+                raise InterruptedError('Thumbnail rebuild cancelled; completed thumbnails have been kept')
+            for key, value in counts.items():
+                setattr(job, key, value)
+            job.current_path = str(path)
+            job.message = last_message
+            job.updated_at = now()
+
+    with Session.begin() as db:
+        job = db.get(Scan, job_id)
+        job.state, job.message, job.updated_at = 'running', last_message, now()
+    try:
+        with Session() as db:
+            counts['discovered'] = db.scalar(select(func.count()).select_from(Photo).where(Photo.cache_key.is_not(None))) or 0
+        report(message=f'Rebuilding {counts["discovered"]} thumbnails')
+        last_id = 0
+        while True:
+            with Session() as db:
+                batch = list(db.scalars(select(Photo).where(Photo.id > last_id, Photo.cache_key.is_not(None))
+                                        .order_by(Photo.id).limit(100)))
+            if not batch:
+                break
+            for photo in batch:
+                last_id = photo.id
+                report(photo.path)
+                try:
+                    source = Path(photo.path)
+                    if source.is_symlink() or not source.is_file():
+                        raise OSError('Original file is unavailable')
+                    make_thumbnail(source, photo.metadata_json or {}, thumbnail_cache, photo.cache_key)
+                    counts['indexed'] += 1
+                except Exception as exc:
+                    counts['errors'] += 1
+                    report(photo.path, f'Could not rebuild thumbnail: {exc}')
+                    log.warning('Thumbnail rebuild failed for %s: %s', photo.path, exc)
+        report(message='Thumbnail rebuild complete' if not counts['errors'] else 'Thumbnail rebuild complete with errors')
+        state, message = 'done', last_message
+    except InterruptedError as exc:
+        state, message = 'cancelled', str(exc)
+    except Exception as exc:
+        state, message = 'failed', str(exc)
+        log.exception('Thumbnail rebuild failed')
+    with Session.begin() as db:
+        job = db.get(Scan, job_id)
+        for key, value in counts.items():
+            setattr(job, key, value)
+        job.state, job.message, job.updated_at = state, message, now()
+        job.current_path = ''
+
+
+def job_mode(job_id):
+    with Session() as db:
+        setting = db.get(Setting, SCAN_MODE_PREFIX + str(job_id))
+        return setting.value if setting else 'scan'
+
+
+def clear_job_mode(job_id):
+    with Session.begin() as db:
+        setting = db.get(Setting, SCAN_MODE_PREFIX + str(job_id))
+        if setting:
+            db.delete(setting)
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     Path(CACHE).mkdir(parents=True, exist_ok=True)
@@ -200,7 +289,12 @@ def main():
             with Session() as db:
                 job = db.scalar(select(Scan).where(Scan.state == 'queued').order_by(Scan.id).limit(1))
             if job:
-                scan(job.id)
+                mode = job_mode(job.id)
+                if mode == 'thumbnails':
+                    rebuild_thumbnails(job.id)
+                else:
+                    scan(job.id)
+                clear_job_mode(job.id)
             else:
                 time.sleep(2)
         except Exception:
