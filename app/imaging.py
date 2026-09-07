@@ -104,13 +104,27 @@ def make_thumbnail(path, metadata, thumbnail_cache, key):
         image.close()
 
 
-def make_previews(path, metadata, cache, key, thumbnail_cache=None):
-    thumbnail_cache = thumbnail_cache or cache
+def make_preview(path, metadata, preview_cache, key):
     image = open_preview(path, metadata)
     try:
         converted = _srgb(image)
         try:
-            _save_scaled(converted, cache_file(cache, key, 'preview'),
+            _save_scaled(converted, cache_file(preview_cache, key, 'preview'),
+                         int(os.environ.get('PREVIEW_EDGE', '2560')), 88)
+        finally:
+            if converted is not image:
+                converted.close()
+    finally:
+        image.close()
+
+
+def make_previews(path, metadata, preview_cache, key, thumbnail_cache=None):
+    thumbnail_cache = thumbnail_cache or preview_cache
+    image = open_preview(path, metadata)
+    try:
+        converted = _srgb(image)
+        try:
+            _save_scaled(converted, cache_file(preview_cache, key, 'preview'),
                          int(os.environ.get('PREVIEW_EDGE', '2560')), 88)
             _save_scaled(converted, cache_file(thumbnail_cache, key, 'thumb'), 480, 80)
         finally:
