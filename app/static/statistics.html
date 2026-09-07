@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>RAW Catalog Statistics</title><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/controls.css"><link rel="stylesheet" href="/static/statistics.css"><script defer src="/static/statistics.js"></script></head>
+<body>
+<div id="statisticsApp" hidden>
+<header><div class="brand"><span class="mark">R / C</span><div><strong>RAW Catalog</strong><span>Statistics</span></div></div><div class="header-actions"><a class="button-link" href="/">Library</a><a class="button-link" href="/settings">Settings</a><button id="refreshStats">Refresh</button><button id="signOut">Sign out</button></div></header>
+<main class="statistics-main">
+<div class="title-row"><div><p class="eyebrow">STATISTICS</p><h1>Archive usage</h1></div><span id="generatedAt" class="read-only">—</span></div>
+<div id="statisticsError" class="error" role="alert" hidden></div>
+<div id="statisticsLoading" class="empty"><h2>Building archive statistics…</h2><p>The first calculation can take longer on a large catalog. Results are cached until the catalog changes.</p></div>
+<div id="statisticsContent" hidden>
+<section class="summary-grid">
+<div class="summary-card"><span>Photographs</span><strong id="totalPhotos">—</strong></div>
+<div class="summary-card"><span>With capture date</span><strong id="datedPhotos">—</strong></div>
+<div class="summary-card"><span>Cameras</span><strong id="distinctCameras">—</strong></div>
+<div class="summary-card"><span>Lenses</span><strong id="distinctLenses">—</strong></div>
+</section>
+<section class="statistics-grid">
+<div class="stats-card"><div class="card-heading"><p class="eyebrow">CAMERAS</p><h2>Camera usage</h2></div><div id="cameraBars" class="bar-list"></div></div>
+<div class="stats-card"><div class="card-heading"><p class="eyebrow">LENSES</p><h2>Lens usage</h2></div><div id="lensBars" class="bar-list"></div></div>
+<div class="stats-card"><div class="card-heading"><p class="eyebrow">FOCAL LENGTH</p><h2>Most-used focal lengths</h2></div><div id="focalBars" class="bar-list"></div></div>
+<div class="stats-card"><div class="card-heading"><p class="eyebrow">APERTURE</p><h2>Most-used apertures</h2></div><div id="apertureBars" class="bar-list"></div></div>
+</section>
+<section class="stats-card wide-card"><div class="card-heading"><p class="eyebrow">TREND</p><h2>Camera usage — last 60 active months</h2></div><div id="trendLegend" class="trend-legend"></div><div class="chart-wrap"><svg id="cameraTrend" viewBox="0 0 1000 320" role="img" aria-label="Camera usage trend"></svg></div><div id="trendDates" class="trend-dates"></div></section>
+<section class="stats-card wide-card"><div class="card-heading"><p class="eyebrow">YEARS</p><h2>Photographs by year</h2></div><div id="yearBars" class="bar-list years"></div></section>
+</div>
+</main>
+<footer>RAW Catalog <span>Statistics are derived from indexed EXIF metadata</span></footer>
+</div>
+</body></html>
