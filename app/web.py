@@ -430,7 +430,7 @@ def create_app():
     def purge_generated(kind, current_root):
         roots = [current_root]
         legacy = cache_root()
-        if legacy != current_root and not str(current_root).startswith(str(legacy) + os.sep):
+        if legacy != current_root:
             roots.append(legacy)
         removed = bytes_removed = 0
         for root in roots:
