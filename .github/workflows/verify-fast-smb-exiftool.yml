@@ -99,18 +99,7 @@ jobs:
 
           p = Path('tests/test_preview_on_demand.py')
           s = p.read_text()
-          s += """
-
-
-def test_fast_smb_setting_is_recorded(client):
-    headers = {'X-CSRF-Token': client.csrf}
-    queued = client.post('/api/scan', json={'skip_post_stat': True, 'parallelism': 4}, headers=headers)
-    assert queued.status_code == 202
-    job_id = queued.json['scan']['id']
-    with Session() as db:
-        setting = db.get(Setting, f'scan_skip_post_stat:{job_id}')
-        assert setting is not None and setting.value == '1'
-"""
+          s += "\n\ndef test_fast_smb_setting_is_recorded(client):\n    headers = {'X-CSRF-Token': client.csrf}\n    queued = client.post('/api/scan', json={'skip_post_stat': True, 'parallelism': 4}, headers=headers)\n    assert queued.status_code == 202\n    job_id = queued.json['scan']['id']\n    with Session() as db:\n        setting = db.get(Setting, f'scan_skip_post_stat:{job_id}')\n        assert setting is not None and setting.value == '1'\n"
           p.write_text(s)
           PY
       - name: Install dependencies and ExifTool
@@ -144,7 +133,7 @@ def test_fast_smb_setting_is_recorded(client):
           grep -q "skip_post_stat=data.get" app/web.py
           grep -q "skipPostStat" app/static/indexer.html
           grep -q "_preview_exiftool" app/imaging.py
-          grep -q "-stay_open" app/imaging.py
+          grep -q -- "-stay_open" app/imaging.py
       - name: Commit verified changes and remove workflow
         run: |
           git config user.name 'github-actions[bot]'
