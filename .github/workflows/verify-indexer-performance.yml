@@ -1,0 +1,36 @@
+name: Verify indexer performance changes
+on:
+  push:
+permissions:
+  contents: write
+jobs:
+  test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+      - name: Python tests
+        run: pytest -q
+      - name: Python syntax
+        run: python -m py_compile app/worker.py app/imaging.py
+      - name: Verify performance wiring
+        run: |
+          grep -q 'SCAN_BATCH_SIZE = 128' app/worker.py
+          grep -q 'DB_WRITE_BATCH_SIZE = 16' app/worker.py
+          grep -q 'PROGRESS_INTERVAL = 0.5' app/worker.py
+          grep -q 'optimize=False' app/imaging.py
+      - name: Remove temporary workflow
+        if: success()
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/verify-indexer-performance.yml
+          git commit -m 'Remove temporary indexer performance verification'
+          git push
