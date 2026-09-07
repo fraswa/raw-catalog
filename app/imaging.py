@@ -1,8 +1,12 @@
 """Read-only metadata and preview extraction. Never writes to originals."""
+import atexit
 import io
 import json
 import os
+import select
 import subprocess
+import threading
+import time
 from pathlib import Path
 from PIL import Image, ImageOps, ImageCms
 
@@ -13,13 +17,140 @@ TAGS = ['Make', 'Model', 'LensModel', 'LensID', 'Lens', 'LensType', 'DateTimeOri
         'CreateDate', 'ISO', 'FNumber', 'ExposureTime', 'FocalLength', 'ImageWidth',
         'ImageHeight', 'Orientation', 'SerialNumber', 'LensSerialNumber', 'FileType']
 
+_sessions = set()
+_sessions_lock = threading.Lock()
+_metadata_session = None
+_metadata_lock = threading.Lock()
+_preview_local = threading.local()
+
+
+class ExifToolSession:
+    """Persistent ExifTool -stay_open process. One instance is safe to share serially."""
+    def __init__(self):
+        self._process = None
+        self._counter = 0
+        self._lock = threading.Lock()
+        with _sessions_lock:
+            _sessions.add(self)
+
+    def _start(self):
+        self._process = subprocess.Popen(
+            ['exiftool', '-stay_open', 'True', '-@', '-'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            bufsize=0)
+
+    def close(self):
+        process = self._process
+        self._process = None
+        if not process:
+            return
+        try:
+            if process.poll() is None and process.stdin:
+                process.stdin.write(b'-stay_open\nFalse\n')
+                process.stdin.flush()
+                process.wait(timeout=2)
+        except Exception:
+            try:
+                process.terminate()
+                process.wait(timeout=1)
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+
+    def _oneshot(self, args, timeout):
+        result = subprocess.run(['exiftool', *args], capture_output=True,
+                                timeout=timeout, check=False)
+        return result.stdout
+
+    def _execute_once(self, args, timeout):
+        # ExifTool argfiles are line based, so preserve support for rare newline-containing paths.
+        if any('\n' in str(arg) or '\r' in str(arg) for arg in args):
+            return self._oneshot(args, timeout)
+        if self._process is None or self._process.poll() is not None:
+            self.close()
+            self._start()
+        self._counter += 1
+        token = str(self._counter)
+        marker = ('{ready' + token + '}\n').encode('ascii')
+        payload = ''.join(str(arg) + '\n' for arg in args) + '-execute' + token + '\n'
+        try:
+            self._process.stdin.write(payload.encode('utf-8', errors='surrogateescape'))
+            self._process.stdin.flush()
+        except (AttributeError, BrokenPipeError, OSError) as exc:
+            raise RuntimeError('ExifTool persistent session write failed') from exc
+
+        deadline = time.monotonic() + timeout
+        output = bytearray()
+        fd = self._process.stdout.fileno()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('ExifTool persistent session timed out')
+            readable, _, _ = select.select([fd], [], [], remaining)
+            if not readable:
+                raise TimeoutError('ExifTool persistent session timed out')
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                raise RuntimeError('ExifTool persistent session ended unexpectedly')
+            output.extend(chunk)
+            position = output.find(marker)
+            if position >= 0:
+                return bytes(output[:position])
+
+    def execute(self, args, timeout=90):
+        with self._lock:
+            for attempt in range(2):
+                try:
+                    return self._execute_once(args, timeout)
+                except (TimeoutError, RuntimeError, OSError):
+                    self.close()
+                    if attempt:
+                        raise
+            raise RuntimeError('ExifTool persistent session failed')
+
+
+def close_exiftool_sessions():
+    global _metadata_session
+    with _sessions_lock:
+        sessions = list(_sessions)
+        _sessions.clear()
+    for session in sessions:
+        session.close()
+    with _metadata_lock:
+        _metadata_session = None
+    try:
+        delattr(_preview_local, 'session')
+    except AttributeError:
+        pass
+
+
+atexit.register(close_exiftool_sessions)
+
+
+def _metadata_exiftool():
+    global _metadata_session
+    with _metadata_lock:
+        if _metadata_session is None:
+            _metadata_session = ExifToolSession()
+        return _metadata_session
+
+
+def _preview_exiftool():
+    session = getattr(_preview_local, 'session', None)
+    if session is None:
+        session = ExifToolSession()
+        _preview_local.session = session
+    return session
+
 
 def metadata_batch(paths):
-    result = subprocess.run(['exiftool', '-j', '-charset', 'filename=UTF8', '-Orientation#',
-                             *['-' + t for t in TAGS if t != 'Orientation'], *map(str, paths)],
-                            capture_output=True, timeout=180, check=False)
+    output = _metadata_exiftool().execute(
+        ['-j', '-charset', 'filename=UTF8', '-Orientation#',
+         *['-' + tag for tag in TAGS if tag != 'Orientation'], *map(str, paths)], timeout=180)
     try:
-        records = json.loads(result.stdout)
+        records = json.loads(output)
     except (ValueError, UnicodeError) as exc:
         raise RuntimeError('ExifTool did not return valid metadata') from exc
     return {r['SourceFile']: r for r in records if 'SourceFile' in r}
@@ -38,12 +169,12 @@ def orient(image, orientation):
 
 def open_preview(path, metadata):
     orientation = metadata.get('Orientation', 1)
+    exiftool = _preview_exiftool()
     for tag in ('JpgFromRaw', 'PreviewImage'):
-        result = subprocess.run(['exiftool', '-b', '-' + tag, str(path)],
-                                capture_output=True, timeout=90, check=False)
-        if result.stdout:
+        data = exiftool.execute(['-b', '-' + tag, str(path)], timeout=90)
+        if data:
             try:
-                image = Image.open(io.BytesIO(result.stdout))
+                image = Image.open(io.BytesIO(data))
                 image.load()
                 return orient(image, orientation)
             except (OSError, ValueError):
@@ -93,8 +224,6 @@ def make_thumbnail(path, metadata, thumbnail_cache, key):
     try:
         converted = _srgb(image)
         try:
-            # JPEG optimization adds an extra CPU pass for very small files. It saves little
-            # space at 480 px, so favor indexing throughput for thumbnails.
             _save_scaled(converted, cache_file(thumbnail_cache, key, 'thumb'), 480, 80,
                          optimize=False)
         finally:
