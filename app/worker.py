@@ -9,7 +9,7 @@ from sqlalchemy import select, update, func
 from app.db import Session, Photo, Scan, Setting, init_db, now
 from app.imaging import EXTENSIONS, metadata_batch, make_previews, make_thumbnail, make_preview, cache_file
 from app.storage import (cache_root, configured_thumbnail_folder, configured_preview_folder,
-                         resolve_thumbnail_root, resolve_preview_root)
+                         configured_preview_edge, resolve_thumbnail_root, resolve_preview_root)
 
 log = logging.getLogger(__name__)
 CACHE = os.environ.get('CACHE_DIR', '/data/cache')
@@ -54,20 +54,25 @@ def selected_scan_root():
 
 def current_thumbnail_root():
     with Session() as db:
-        relative = configured_thumbnail_folder(db)
+        value = configured_thumbnail_folder(db)
     try:
-        return resolve_thumbnail_root(relative, create=True)
+        return resolve_thumbnail_root(value, create=True)
     except (ValueError, RuntimeError) as exc:
         raise RuntimeError(f'Invalid thumbnail folder: {exc}') from exc
 
 
 def current_preview_root():
     with Session() as db:
-        relative = configured_preview_folder(db)
+        value = configured_preview_folder(db)
     try:
-        return resolve_preview_root(relative, create=True)
+        return resolve_preview_root(value, create=True)
     except (ValueError, RuntimeError) as exc:
         raise RuntimeError(f'Invalid preview folder: {exc}') from exc
+
+
+def current_preview_edge():
+    with Session() as db:
+        return configured_preview_edge(db)
 
 
 def capture_date(meta):
@@ -118,6 +123,7 @@ def scan(job_id):
     try:
         thumbnail_cache = current_thumbnail_root()
         preview_cache = current_preview_root()
+        preview_edge = current_preview_edge()
         legacy_cache = cache_root()
 
         def process(paths):
@@ -162,7 +168,7 @@ def scan(job_id):
                     key = digest(f'{path_hash}:{stat.st_mtime_ns}:{stat.st_size}')
                     preview_error = None
                     try:
-                        make_previews(path, meta, preview_cache, key, thumbnail_cache)
+                        make_previews(path, meta, preview_cache, key, thumbnail_cache, preview_edge)
                     except Exception as exc:
                         preview_error = str(exc)[:2000]
                         counts['errors'] += 1
@@ -244,6 +250,7 @@ def rebuild_media(job_id, kind):
         job.state, job.message, job.updated_at = 'running', last_message, now()
     try:
         output_root = current_thumbnail_root() if kind == 'thumb' else current_preview_root()
+        preview_edge = current_preview_edge() if kind == 'preview' else None
         with Session() as db:
             counts['discovered'] = db.scalar(select(func.count()).select_from(Photo).where(Photo.cache_key.is_not(None))) or 0
         report(message=f'Rebuilding {counts["discovered"]} {plural}')
@@ -264,7 +271,7 @@ def rebuild_media(job_id, kind):
                     if kind == 'thumb':
                         make_thumbnail(source, photo.metadata_json or {}, output_root, photo.cache_key)
                     else:
-                        make_preview(source, photo.metadata_json or {}, output_root, photo.cache_key)
+                        make_preview(source, photo.metadata_json or {}, output_root, photo.cache_key, preview_edge)
                     counts['indexed'] += 1
                 except Exception as exc:
                     counts['errors'] += 1
@@ -309,7 +316,6 @@ def clear_job_mode(job_id):
 def main():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     Path(CACHE).mkdir(parents=True, exist_ok=True)
-    # One worker across containers sharing this cache, including CLI invocations.
     lock = open(Path(CACHE) / 'worker.lock', 'w')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     init_db()
