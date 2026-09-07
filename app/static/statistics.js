@@ -16,15 +16,19 @@ function renderBars(id, rows, options={}){
   for(const row of rows){
     const item=document.createElement('div');item.className='bar-item'+(options.camera&&row.value===selectedCamera?' selected':'');
     let label;
-    if(options.libraryParam){label=document.createElement('a');label.href=libraryUrl({[options.libraryParam]:row.value});label.className='bar-link';}
-    else {label=document.createElement('span');}
+    if(options.camera){
+      label=document.createElement('button');label.type='button';label.className='bar-filter-link';label.onclick=()=>selectCamera(row.value);
+    } else if(options.libraryParam){
+      label=document.createElement('a');const filters={[options.libraryParam]:row.value};if(options.includeCamera&&selectedCamera)filters.camera=selectedCamera;label.href=libraryUrl(filters);label.className='bar-link';
+    } else {label=document.createElement('span');}
     label.textContent=row.value;label.title=row.value;
     const bar=document.createElement('progress');bar.max=max;bar.value=row.count;
-    const count=document.createElement('strong');count.textContent=nf.format(row.count);
+    const count=document.createElement('strong');
+    const percentage=options.total?Math.round(row.count*1000/options.total)/10:null;
+    count.textContent=percentage===null?nf.format(row.count):`${nf.format(row.count)} · ${percentage}%`;
     item.append(label,bar,count);
     if(options.camera){
-      const filter=document.createElement('button');filter.type='button';filter.className='mini-filter';filter.textContent=row.value===selectedCamera?'Selected':'Filter stats';filter.disabled=row.value===selectedCamera;
-      filter.onclick=()=>selectCamera(row.value);item.append(filter);
+      const open=document.createElement('a');open.className='mini-filter';open.href=libraryUrl({camera:row.value});open.textContent='Open Library';open.title=`Open ${row.value} photographs in Library`;item.append(open);
     }
     host.append(item);
   }
@@ -36,7 +40,7 @@ function renderTrendRows(rows,names){
   const left=45,right=980,top=20,bottom=285,width=right-left,height=bottom-top;
   let max=1;for(const row of rows)for(const name of names)max=Math.max(max,row.cameras[name]||0);
   for(let i=0;i<=4;i++){const y=top+height*i/4;chart.append(svg('line',{x1:left,y1:y,x2:right,y2:y,class:'chart-grid'}));const t=svg('text',{x:5,y:y+4,class:'chart-label'});t.textContent=nf.format(Math.round(max*(1-i/4)));chart.append(t);}
-  names.forEach((name,index)=>{const points=rows.map((row,i)=>{const x=left+(rows.length===1?width/2:width*i/(rows.length-1));const y=bottom-height*((row.cameras[name]||0)/max);return `${x},${y}`;}).join(' ');chart.append(svg('polyline',{points,class:`trend-line line-${index}`}));const legend=document.createElement('a');legend.href=libraryUrl({camera:name});legend.className=`legend-item legend-${index}`;const swatch=document.createElement('span');swatch.className='legend-swatch';const text=document.createElement('span');text.textContent=name;legend.append(swatch,text);$('trendLegend').append(legend);});
+  names.forEach((name,index)=>{const points=rows.map((row,i)=>{const x=left+(rows.length===1?width/2:width*i/(rows.length-1));const y=bottom-height*((row.cameras[name]||0)/max);return `${x},${y}`;}).join(' ');chart.append(svg('polyline',{points,class:`trend-line line-${index}`}));const legend=document.createElement('button');legend.type='button';legend.onclick=()=>selectCamera(name);legend.className=`legend-item legend-${index}`;const swatch=document.createElement('span');swatch.className='legend-swatch';const text=document.createElement('span');text.textContent=name;legend.append(swatch,text);$('trendLegend').append(legend);});
   $('trendDates').replaceChildren();const first=document.createElement('span');first.textContent=rows[0].month;const last=document.createElement('span');last.textContent=rows[rows.length-1].month;$('trendDates').append(first,last);
 }
 function renderGlobalTrend(data){renderTrendRows(data.trend||[],data.top_camera_names||[]);}
@@ -62,7 +66,13 @@ function selectCamera(camera){
   $('cameraScope').hidden=false;$('cameraScopeName').textContent=camera;$('cameraScopeSummary').textContent=`${nf.format(detail.total_photos)} photos · ${nf.format(detail.distinct_lenses)} lenses`;
   $('cameraScopeLibrary').href=libraryUrl({camera});
   $('lensHeading').textContent=`Lens usage — ${camera}`;$('focalHeading').textContent=`Focal lengths — ${camera}`;$('apertureHeading').textContent=`Apertures — ${camera}`;$('trendHeading').textContent=`${camera} usage — last 60 active months`;$('yearHeading').textContent=`${camera} photographs by year`;
-  renderSummary(archiveData,detail);renderBars('cameraBars',archiveData.cameras,{camera:true,libraryParam:'camera'});renderBars('lensBars',detail.lenses,{libraryParam:'lens'});renderBars('focalBars',detail.focal_lengths);renderBars('apertureBars',detail.apertures);renderBars('yearBars',(detail.yearly||[]).map(x=>({value:x.year,count:x.count})).reverse());renderCameraTrend(camera,detail);
+  renderSummary(archiveData,detail);
+  renderBars('cameraBars',archiveData.cameras,{camera:true,total:archiveData.total_photos});
+  renderBars('lensBars',detail.lenses,{libraryParam:'lens',includeCamera:true,total:detail.total_photos});
+  renderBars('focalBars',detail.focal_lengths,{total:detail.total_photos});
+  renderBars('apertureBars',detail.apertures,{total:detail.total_photos});
+  renderBars('yearBars',(detail.yearly||[]).map(x=>({value:x.year,count:x.count})).reverse(),{total:detail.dated_photos});
+  renderCameraTrend(camera,detail);
 }
 function clearCamera(){
   selectedCamera='';$('cameraScope').hidden=true;
@@ -73,8 +83,11 @@ function show(data, resetSelection=true){
   archiveData=data;if(resetSelection)selectedCamera='';
   $('statisticsLoading').hidden=true;$('statisticsContent').hidden=false;$('statisticsError').hidden=true;$('cameraScope').hidden=true;
   renderSummary(data);$('generatedAt').textContent=`${data.cached?'Cached':'Calculated'} ${new Date(data.generated_at).toLocaleString()}`;
-  renderBars('cameraBars',data.cameras,{camera:true,libraryParam:'camera'});renderBars('lensBars',data.lenses,{libraryParam:'lens'});renderBars('focalBars',data.focal_lengths);renderBars('apertureBars',data.apertures);
-  renderBars('yearBars',(data.yearly||[]).map(x=>({value:x.year,count:x.count})).reverse());renderGlobalTrend(data);
+  renderBars('cameraBars',data.cameras,{camera:true,total:data.total_photos});
+  renderBars('lensBars',data.lenses,{libraryParam:'lens',total:data.total_photos});
+  renderBars('focalBars',data.focal_lengths,{total:data.total_photos});
+  renderBars('apertureBars',data.apertures,{total:data.total_photos});
+  renderBars('yearBars',(data.yearly||[]).map(x=>({value:x.year,count:x.count})).reverse(),{total:data.dated_photos});renderGlobalTrend(data);
 }
 async function load(force=false){$('statisticsLoading').hidden=false;$('statisticsContent').hidden=true;$('refreshStats').disabled=true;try{show(await api('/api/statistics'+(force?'?refresh=1':'')));}catch(err){$('statisticsLoading').hidden=true;showError(err);}finally{$('refreshStats').disabled=false;}}
 $('clearCameraScope').onclick=clearCamera;
