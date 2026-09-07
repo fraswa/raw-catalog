@@ -8,6 +8,7 @@ x-app: &app
     CATALOG_PASSWORD: ${CATALOG_PASSWORD:?Run setup.py}
     PHOTO_ROOT: /photos
     CACHE_DIR: /data/cache
+    EXTERNAL_STORAGE_ROOT: /storage
     COOKIE_SECURE: ${COOKIE_SECURE:-false}
     PREVIEW_EDGE: ${PREVIEW_EDGE:-2560}
   security_opt:
@@ -36,6 +37,7 @@ services:
       - '${BIND_IP:-0.0.0.0}:${WEB_PORT:-8080}:8000'
     volumes:
       - previews:/data/cache
+      - ${STORAGE_PATH:-./storage}:/storage
       - type: bind
         source: ${PHOTO_PATH:?Run setup.py}
         target: /photos
@@ -55,6 +57,7 @@ services:
     command: ["python", "-m", "app.worker"]
     volumes:
       - previews:/data/cache
+      - ${STORAGE_PATH:-./storage}:/storage
       - type: bind
         source: ${PHOTO_PATH:?Run setup.py}
         target: /photos
