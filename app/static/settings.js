@@ -28,14 +28,13 @@ function formatBytes(value) {
 }
 
 function setActionsDisabled(disabled) {
-  $('saveFolder').disabled = disabled;
-  $('thumbnailFolder').disabled = disabled;
-  $('rebuildThumbnails').disabled = disabled;
-  $('purgeThumbnails').disabled = disabled;
+  for (const id of ['saveFolder','thumbnailFolder','rebuildThumbnails','purgeThumbnails',
+                    'savePreviewFolder','previewFolder','rebuildPreviews','purgePreviews']) {
+    $(id).disabled = disabled;
+  }
 }
 
-async function loadSettings() {
-  const data = await api('/api/settings/thumbnails');
+function showThumbnailSettings(data) {
   $('cacheRoot').textContent = data.cache_root;
   $('thumbnailFolder').value = data.folder;
   $('thumbnailPath').textContent = data.path;
@@ -44,8 +43,28 @@ async function loadSettings() {
   $('eligiblePhotos').textContent = nf.format(data.eligible_photos);
   $('estimatedBytes').textContent = `≈ ${formatBytes(data.estimated_bytes)}`;
   $('estimateBasis').textContent = `Estimate uses ${formatBytes(data.estimated_per_thumbnail)} per thumbnail (${data.estimate_basis}).`;
-  setActionsDisabled(data.active);
-  return data;
+}
+
+function showPreviewSettings(data) {
+  $('previewCacheRoot').textContent = data.cache_root;
+  $('previewFolder').value = data.folder;
+  $('previewPath').textContent = data.path;
+  $('previewFiles').textContent = nf.format(data.files);
+  $('previewBytes').textContent = formatBytes(data.bytes);
+  $('previewEligiblePhotos').textContent = nf.format(data.eligible_photos);
+  $('previewEstimatedBytes').textContent = `≈ ${formatBytes(data.estimated_bytes)}`;
+  $('previewEstimateBasis').textContent = `Max edge ${nf.format(data.preview_edge)}px. Estimate uses ${formatBytes(data.estimated_per_preview)} per preview (${data.estimate_basis}).`;
+}
+
+async function loadSettings() {
+  const [thumbnails, previews] = await Promise.all([
+    api('/api/settings/thumbnails'),
+    api('/api/settings/previews')
+  ]);
+  showThumbnailSettings(thumbnails);
+  showPreviewSettings(previews);
+  setActionsDisabled(thumbnails.active || previews.active);
+  return {thumbnails, previews};
 }
 
 async function pollJob() {
@@ -81,18 +100,35 @@ $('thumbnailFolderForm').onsubmit = async event => {
   event.preventDefault();
   clearError();
   $('saveFolder').disabled = true;
-  $('actionMessage').textContent = 'Changing thumbnail folder…';
+  $('thumbnailActionMessage').textContent = 'Changing thumbnail folder…';
   try {
     const data = await api('/api/settings/thumbnails', {method:'PUT', body:JSON.stringify({folder:$('thumbnailFolder').value.trim()})});
-    $('thumbnailFolder').value = data.folder;
-    $('thumbnailPath').textContent = data.path;
-    $('actionMessage').textContent = 'Thumbnail folder changed. Existing thumbnails in the previous folder are not moved; rebuild to populate the new folder.';
+    showThumbnailSettings(data);
+    $('thumbnailActionMessage').textContent = 'Thumbnail folder changed. Existing thumbnails in the previous folder remain readable until you rebuild or purge them.';
     await loadSettings();
   } catch (err) {
-    $('actionMessage').textContent = '';
+    $('thumbnailActionMessage').textContent = '';
     showError(err);
   } finally {
     $('saveFolder').disabled = false;
+  }
+};
+
+$('previewFolderForm').onsubmit = async event => {
+  event.preventDefault();
+  clearError();
+  $('savePreviewFolder').disabled = true;
+  $('previewActionMessage').textContent = 'Changing preview folder…';
+  try {
+    const data = await api('/api/settings/previews', {method:'PUT', body:JSON.stringify({folder:$('previewFolder').value.trim()})});
+    showPreviewSettings(data);
+    $('previewActionMessage').textContent = 'Preview folder changed. Existing previews in the legacy location remain readable until you rebuild or purge them.';
+    await loadSettings();
+  } catch (err) {
+    $('previewActionMessage').textContent = '';
+    showError(err);
+  } finally {
+    $('savePreviewFolder').disabled = false;
   }
 };
 
@@ -100,15 +136,31 @@ $('rebuildThumbnails').onclick = async () => {
   if (!window.confirm('Rebuild all thumbnails from indexed originals? Full previews and metadata will be left unchanged.')) return;
   clearError();
   $('rebuildThumbnails').disabled = true;
-  $('actionMessage').textContent = 'Thumbnail rebuild queued…';
+  $('thumbnailActionMessage').textContent = 'Thumbnail rebuild queued…';
   try {
     await api('/api/cache/thumbnails/rebuild', {method:'POST'});
     clearTimeout(timer);
     await pollJob();
   } catch (err) {
-    $('actionMessage').textContent = '';
+    $('thumbnailActionMessage').textContent = '';
     showError(err);
     $('rebuildThumbnails').disabled = false;
+  }
+};
+
+$('rebuildPreviews').onclick = async () => {
+  if (!window.confirm('Rebuild all previews from indexed originals? Thumbnails and metadata will be left unchanged.')) return;
+  clearError();
+  $('rebuildPreviews').disabled = true;
+  $('previewActionMessage').textContent = 'Preview rebuild queued…';
+  try {
+    await api('/api/cache/previews/rebuild', {method:'POST'});
+    clearTimeout(timer);
+    await pollJob();
+  } catch (err) {
+    $('previewActionMessage').textContent = '';
+    showError(err);
+    $('rebuildPreviews').disabled = false;
   }
 };
 
@@ -116,16 +168,33 @@ $('purgeThumbnails').onclick = async () => {
   if (!window.confirm('Delete all generated thumbnails? Originals and full previews will not be touched.')) return;
   clearError();
   $('purgeThumbnails').disabled = true;
-  $('actionMessage').textContent = 'Purging thumbnails…';
+  $('thumbnailActionMessage').textContent = 'Purging thumbnails…';
   try {
     const data = await api('/api/cache/thumbnails', {method:'DELETE'});
-    $('actionMessage').textContent = `Removed ${nf.format(data.removed)} thumbnails (${formatBytes(data.bytes_removed)}).`;
+    $('thumbnailActionMessage').textContent = `Removed ${nf.format(data.removed)} thumbnails (${formatBytes(data.bytes_removed)}).`;
     await loadSettings();
   } catch (err) {
-    $('actionMessage').textContent = '';
+    $('thumbnailActionMessage').textContent = '';
     showError(err);
   } finally {
     $('purgeThumbnails').disabled = false;
+  }
+};
+
+$('purgePreviews').onclick = async () => {
+  if (!window.confirm('Delete all generated previews? Originals and thumbnails will not be touched.')) return;
+  clearError();
+  $('purgePreviews').disabled = true;
+  $('previewActionMessage').textContent = 'Purging previews…';
+  try {
+    const data = await api('/api/cache/previews', {method:'DELETE'});
+    $('previewActionMessage').textContent = `Removed ${nf.format(data.removed)} previews (${formatBytes(data.bytes_removed)}).`;
+    await loadSettings();
+  } catch (err) {
+    $('previewActionMessage').textContent = '';
+    showError(err);
+  } finally {
+    $('purgePreviews').disabled = false;
   }
 };
 
