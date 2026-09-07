@@ -16,7 +16,7 @@ from app.db import Base, engine, Session, Photo, Scan, Setting, init_db
 from app.web import create_app
 from app import worker
 from app.imaging import orient, make_previews, cache_file
-from app.storage import resolve_thumbnail_root
+from app.storage import resolve_thumbnail_root, resolve_preview_root
 
 
 @pytest.fixture(autouse=True)
@@ -152,6 +152,53 @@ def test_thumbnail_settings_stats_and_rebuild_queue(client, tmp_path, monkeypatc
     assert client.delete('/api/cache/thumbnails', headers=headers).status_code == 409
 
 
+def test_preview_settings_stats_purge_and_rebuild_queue(client, tmp_path, monkeypatch):
+    cache = tmp_path / 'cache'
+    monkeypatch.setenv('CACHE_DIR', str(cache))
+    headers = {'X-CSRF-Token':client.csrf}
+    with Session.begin() as db:
+        for i in range(2):
+            db.add(Photo(path_hash=f'preview-cache-{i}', path=f'/photos/p{i}.cr3', filename=f'p{i}.cr3',
+                         size=10, mtime_ns=1, cache_key=str(i + 3) * 64))
+
+    initial = client.get('/api/settings/previews').json
+    assert initial['folder'] == 'previews'
+    assert initial['eligible_photos'] == 2
+    assert initial['estimated_bytes'] == 2 * int(1.5 * 1024 * 1024)
+    assert initial['files'] == 0 and initial['preview_edge'] == 2560
+
+    assert client.put('/api/settings/previews', json={'folder':'/tmp/previews'}, headers=headers).status_code == 400
+    assert client.put('/api/settings/previews', json={'folder':'../previews'}, headers=headers).status_code == 400
+    changed = client.put('/api/settings/previews', json={'folder':'cache/full-previews'}, headers=headers)
+    assert changed.status_code == 200 and changed.json['folder'] == 'cache/full-previews'
+    assert Path(changed.json['path']).is_dir()
+
+    root = resolve_preview_root('cache/full-previews', create=True)
+    first = cache_file(root, '3' * 64, 'preview'); second = cache_file(root, '4' * 64, 'preview')
+    first.parent.mkdir(parents=True, exist_ok=True); second.parent.mkdir(parents=True, exist_ok=True)
+    first.write_bytes(b'x' * 1000); second.write_bytes(b'y' * 3000)
+    stats = client.get('/api/settings/previews').json
+    assert stats['files'] == 2 and stats['bytes'] == 4000
+    assert stats['estimated_per_preview'] == 2000 and stats['estimated_bytes'] == 4000
+    assert stats['estimate_basis'] == 'current average'
+
+    legacy = cache_file(cache, '5' * 64, 'preview')
+    thumb = cache_file(cache / 'thumbnails', '3' * 64, 'thumb')
+    legacy.parent.mkdir(parents=True, exist_ok=True); legacy.write_bytes(b'legacy-preview')
+    thumb.parent.mkdir(parents=True, exist_ok=True); thumb.write_bytes(b'thumb')
+    purged = client.delete('/api/cache/previews', headers=headers)
+    assert purged.status_code == 200 and purged.json['removed'] == 3
+    assert not first.exists() and not second.exists() and not legacy.exists() and thumb.exists()
+
+    queued = client.post('/api/cache/previews/rebuild', headers=headers)
+    assert queued.status_code == 202
+    jid = queued.json['scan']['id']
+    with Session() as db:
+        assert db.get(Setting, f'scan_mode:{jid}').value == 'previews'
+    assert client.put('/api/settings/previews', json={'folder':'other'}, headers=headers).status_code == 409
+    assert client.delete('/api/cache/previews', headers=headers).status_code == 409
+
+
 def test_worker_uses_selected_subfolder(tmp_path, monkeypatch):
     root = tmp_path / 'photos'; root.mkdir()
     selected = root / 'selected'; selected.mkdir()
@@ -197,6 +244,7 @@ def test_recursive_incremental_and_preview_retry(tmp_path, monkeypatch):
     with Session() as db:
         p=db.query(Photo).one()
         assert p.camera=='Canon EOS R6' and p.taken_at.year==2026
+        assert cache_file(cache/'previews',p.cache_key,'preview').is_file()
         cache_file(cache/'thumbnails',p.cache_key,'thumb').unlink()
     assert run().indexed==1  # Missing cached thumbnail is repaired.
     photo.write_bytes(b'changed-raw-fixture')
@@ -236,6 +284,29 @@ def test_thumbnail_only_rebuild(tmp_path, monkeypatch):
     assert cache_file(cache/'thumbnails', key, 'thumb').read_bytes() == b'thumb'
 
 
+def test_preview_only_rebuild(tmp_path, monkeypatch):
+    root = tmp_path / 'photos'; root.mkdir()
+    original = root / 'one.cr3'; original.write_bytes(b'raw')
+    cache = tmp_path / 'cache'
+    monkeypatch.setenv('CACHE_DIR', str(cache))
+    monkeypatch.setattr(worker, 'CACHE', str(cache))
+    key = 'd' * 64
+    with Session.begin() as db:
+        db.add(Photo(path_hash='preview-rebuild', path=str(original), filename=original.name, size=3,
+                     mtime_ns=1, cache_key=key, metadata_json={'Orientation':1}))
+        job = Scan(); db.add(job); db.flush(); jid = job.id
+    def fake_preview(path, metadata, preview_cache, cache_key):
+        output = cache_file(preview_cache, cache_key, 'preview')
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b'preview')
+    monkeypatch.setattr(worker, 'make_preview', fake_preview)
+    worker.rebuild_previews(jid)
+    with Session() as db:
+        job = db.get(Scan, jid)
+        assert (job.state, job.discovered, job.indexed, job.errors) == ('done', 1, 1, 0)
+    assert cache_file(cache/'previews', key, 'preview').read_bytes() == b'preview'
+
+
 def test_missing_root_fails_and_keeps_catalog(tmp_path,monkeypatch):
     seed(); monkeypatch.setattr(worker,'ROOT',tmp_path/'unmounted')
     cache = tmp_path/'cache'; monkeypatch.setenv('CACHE_DIR', str(cache)); monkeypatch.setattr(worker,'CACHE',str(cache))
@@ -260,6 +331,7 @@ def test_image_orientation_cache_and_protected_media(client,tmp_path,monkeypatch
     with Session.begin() as db:
         p=Photo(path_hash='preview',path='/photos/test.cr3',filename='test.cr3',size=4,mtime_ns=1,cache_key=key)
         db.add(p); db.flush(); pid=p.id
+    # The configured preview folder is new, but legacy root previews remain readable.
     response=client.get(f'/media/{pid}/preview')
     assert response.status_code==200 and response.mimetype=='image/jpeg'
     assert response.headers['Cache-Control'].startswith('private')
