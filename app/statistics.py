@@ -6,7 +6,7 @@ from sqlalchemy import select, func
 
 from app.db import Photo, Setting
 
-CACHE_KEY = 'statistics_cache_v1'
+CACHE_KEY = 'statistics_cache_v2'
 _number = re.compile(r'[-+]?\d+(?:\.\d+)?')
 
 
@@ -54,20 +54,28 @@ def build_statistics(db, force=False):
 
     cameras = Counter(); lenses = Counter(); focals = Counter(); apertures = Counter(); months = Counter()
     camera_months = defaultdict(Counter); lens_months = defaultdict(Counter)
+    camera_lenses = defaultdict(Counter); camera_focals = defaultdict(Counter)
+    camera_apertures = defaultdict(Counter); camera_years = defaultdict(Counter)
+    camera_dated = Counter()
     dated = total = 0
 
     statement = select(Photo.camera, Photo.lens, Photo.taken_at, Photo.metadata_json).execution_options(yield_per=2000)
     for camera, lens, taken_at, metadata in db.execute(statement):
         total += 1
         camera = camera or 'Unknown camera'; lens = lens or 'Unknown lens'
-        cameras[camera] += 1; lenses[lens] += 1
+        cameras[camera] += 1; lenses[lens] += 1; camera_lenses[camera][lens] += 1
         metadata = metadata or {}
         focal = _number_value(metadata.get('FocalLength')); aperture = _number_value(metadata.get('FNumber'))
-        if focal is not None and focal > 0: focals[_label_number(focal, 1) + ' mm'] += 1
-        if aperture is not None and aperture > 0: apertures['f/' + _label_number(aperture, 1)] += 1
+        if focal is not None and focal > 0:
+            focal_label = _label_number(focal, 1) + ' mm'
+            focals[focal_label] += 1; camera_focals[camera][focal_label] += 1
+        if aperture is not None and aperture > 0:
+            aperture_label = 'f/' + _label_number(aperture, 1)
+            apertures[aperture_label] += 1; camera_apertures[camera][aperture_label] += 1
         if taken_at:
-            dated += 1
-            month = taken_at.strftime('%Y-%m'); months[month] += 1
+            dated += 1; camera_dated[camera] += 1
+            month = taken_at.strftime('%Y-%m'); year = taken_at.strftime('%Y')
+            months[month] += 1; camera_years[camera][year] += 1
             camera_months[month][camera] += 1; lens_months[month][lens] += 1
 
     month_keys = sorted(months)[-60:]
@@ -78,7 +86,23 @@ def build_statistics(db, force=False):
               'lenses': {name: lens_months[month].get(name, 0) for name in top_lenses}}
              for month in month_keys]
     yearly = Counter()
-    for month, count in months.items(): yearly[month[:4]] += count
+    for month, count in months.items():
+        yearly[month[:4]] += count
+
+    camera_breakdowns = {}
+    for camera in cameras:
+        camera_breakdowns[camera] = {
+            'total_photos': cameras[camera],
+            'dated_photos': camera_dated[camera],
+            'distinct_lenses': len(camera_lenses[camera]),
+            'lenses': _top(camera_lenses[camera]),
+            'focal_lengths': _top(camera_focals[camera]),
+            'apertures': _top(camera_apertures[camera]),
+            'yearly': [{'year': year, 'count': camera_years[camera][year]}
+                       for year in sorted(camera_years[camera])],
+            'trend': [{'month': month, 'count': camera_months[month].get(camera, 0)}
+                      for month in month_keys],
+        }
 
     payload = {
         'signature': signature, 'cached': False, 'generated_at': datetime.utcnow().isoformat() + 'Z',
@@ -88,11 +112,14 @@ def build_statistics(db, force=False):
         'cameras': _top(cameras), 'lenses': _top(lenses), 'focal_lengths': _top(focals), 'apertures': _top(apertures),
         'top_camera_names': top_cameras, 'top_lens_names': top_lenses, 'trend': trend,
         'yearly': [{'year': year, 'count': yearly[year]} for year in sorted(yearly)],
+        'camera_breakdowns': camera_breakdowns,
     }
 
     encoded = json.dumps(payload, separators=(',', ':'))
     setting = db.get(Setting, CACHE_KEY)
-    if setting is None: db.add(Setting(key=CACHE_KEY, value=encoded))
-    else: setting.value = encoded
+    if setting is None:
+        db.add(Setting(key=CACHE_KEY, value=encoded))
+    else:
+        setting.value = encoded
     db.flush()
     return payload
