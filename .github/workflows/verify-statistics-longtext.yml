@@ -1,0 +1,28 @@
+name: Verify statistics LONGTEXT
+on:
+  push:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+      - name: Run tests
+        run: pytest -q
+      - name: Verify MariaDB cache type
+        run: |
+          python - <<'PY'
+          from sqlalchemy.dialects import mysql
+          from app.db import Setting
+          compiled = Setting.__table__.c.value.type.compile(dialect=mysql.dialect())
+          print(compiled)
+          assert compiled.upper() == 'LONGTEXT'
+          PY
