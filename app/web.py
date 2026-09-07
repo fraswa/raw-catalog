@@ -1,3 +1,4 @@
+import fcntl
 import hmac
 import os
 import secrets
@@ -7,16 +8,20 @@ from flask import Flask, request, jsonify, session, send_file, abort
 from sqlalchemy import select, func, or_, text
 from werkzeug.exceptions import HTTPException
 from app.db import Session, Photo, Scan, Setting, engine
-from app.imaging import cache_file
+from app.imaging import cache_file, make_preview
 from app.statistics import build_statistics
-from app.storage import (THUMB_FOLDER_KEY, PREVIEW_FOLDER_KEY, PREVIEW_EDGE_KEY, PREVIEW_EDGES,
+from app.storage import (THUMB_FOLDER_KEY, PREVIEW_FOLDER_KEY, PREVIEW_EDGE_KEY,
+                         PREVIEW_QUALITY_KEY, PREVIEW_EDGES, PREVIEW_QUALITIES,
                          cache_root, external_storage_root, configured_thumbnail_folder,
                          configured_preview_folder, configured_preview_edge,
-                         normalize_thumbnail_folder, normalize_preview_folder,
-                         normalize_preview_edge, resolve_thumbnail_root, resolve_preview_root)
+                         configured_preview_quality, normalize_thumbnail_folder,
+                         normalize_preview_folder, normalize_preview_edge,
+                         normalize_preview_quality, resolve_thumbnail_root,
+                         resolve_preview_root)
 
 SELECTED_FOLDER_KEY = 'selected_photo_folder'
 SCAN_MODE_PREFIX = 'scan_mode:'
+SCAN_SKIP_PREVIEWS_PREFIX = 'scan_skip_previews:'
 
 
 def configured_root():
@@ -61,6 +66,22 @@ def resolve_folder(relative):
     if not target.is_dir():
         abort(400, 'Selection is not a folder')
     return target, Path(*clean_parts).as_posix() if clean_parts else ''
+
+
+def resolve_original(path):
+    try:
+        base = configured_root().resolve(strict=True)
+        source = Path(path)
+        if source.is_symlink():
+            raise OSError('Original is a symbolic link')
+        target = source.resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError('Original file is unavailable') from exc
+    if target != base and base not in target.parents:
+        raise RuntimeError('Original file is outside the configured photo root')
+    if not target.is_file():
+        raise RuntimeError('Original path is not a file')
+    return target
 
 
 def create_app():
@@ -215,6 +236,34 @@ def create_app():
             return jsonify(**serialize_photo(p), path=p.path, metadata=p.metadata_json,
                            preview_error=p.preview_error, size=p.size)
 
+    def generate_preview_on_demand(db, photo):
+        try:
+            root = resolve_preview_root(configured_preview_folder(db), create=True)
+            edge = configured_preview_edge(db)
+            quality = configured_preview_quality(db)
+        except (ValueError, RuntimeError) as exc:
+            abort(503, f'Preview storage is unavailable: {exc}')
+        output = cache_file(root, photo.cache_key, 'preview')
+        lock_dir = cache_root() / 'ondemand-locks'
+        try:
+            lock_dir.mkdir(parents=True, exist_ok=True)
+            lock_path = lock_dir / f'{photo.cache_key}.lock'
+            with open(lock_path, 'w') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                if output.is_file():
+                    return output
+                source = resolve_original(photo.path)
+                make_preview(source, photo.metadata_json or {}, root, photo.cache_key, edge, quality)
+        except Exception as exc:
+            photo.preview_error = str(exc)[:2000]
+            db.commit()
+            app.logger.warning('On-demand preview failed for %s: %s', photo.path, exc)
+            abort(500, f'Preview could not be generated: {exc}')
+        if photo.preview_error:
+            photo.preview_error = None
+            db.commit()
+        return output
+
     @app.get('/media/<int:photo_id>/<kind>')
     def media(photo_id, kind):
         if kind not in ('thumb', 'preview'):
@@ -222,7 +271,7 @@ def create_app():
         with Session() as db:
             p = db.get(Photo, photo_id)
             if not p or not p.cache_key:
-                abort(404, 'Preview unavailable')
+                abort(404, 'Generated media unavailable')
             path = None
             try:
                 if kind == 'thumb':
@@ -239,8 +288,10 @@ def create_app():
                 legacy = cache_file(cache_root(), p.cache_key, kind)
                 if legacy.is_file():
                     path = legacy
+            if path is None and kind == 'preview':
+                path = generate_preview_on_demand(db, p)
             if path is None:
-                abort(404, 'Generated image missing; run the appropriate rebuild from Settings')
+                abort(404, 'Thumbnail missing; rebuild thumbnails from Settings')
             return send_file(path, mimetype='image/jpeg', conditional=True)
 
     def active_scan(db):
@@ -323,15 +374,17 @@ def create_app():
     def preview_stats(db):
         value = configured_preview_folder(db)
         edge = configured_preview_edge(db)
+        quality = configured_preview_quality(db)
         try:
             root = resolve_preview_root(value, create=False)
         except (ValueError, RuntimeError) as exc:
             abort(500, f'Preview folder is unavailable: {exc}')
-        baseline = int(1.5 * 1024 * 1024 * (edge / 2560) ** 2)
+        baseline = int(1.5 * 1024 * 1024 * (edge / 2560) ** 2 * (quality / 88))
         result = generated_stats(db, 'preview', root, baseline)
-        result.update(folder=value, preview_edge=edge, estimated_per_preview=result.pop('estimated_per_file'))
+        result.update(folder=value, preview_edge=edge, preview_quality=quality,
+                      estimated_per_preview=result.pop('estimated_per_file'))
         if not result['files']:
-            result['estimate_basis'] = f'{edge}px baseline estimate'
+            result['estimate_basis'] = f'{edge}px quality {quality} baseline estimate'
         return result
 
     def storage_info():
@@ -368,7 +421,7 @@ def create_app():
     def preview_settings():
         with Session() as db:
             return jsonify(**preview_stats(db), **storage_info(), preview_edge_options=PREVIEW_EDGES,
-                           active=bool(active_scan(db)))
+                           preview_quality_options=PREVIEW_QUALITIES, active=bool(active_scan(db)))
 
     @app.put('/api/settings/previews')
     def update_preview_settings():
@@ -376,9 +429,11 @@ def create_app():
         with Session() as db:
             current_folder = configured_preview_folder(db)
             current_edge = configured_preview_edge(db)
+            current_quality = configured_preview_quality(db)
         try:
             value = normalize_preview_folder(data.get('folder', current_folder))
             edge = normalize_preview_edge(data.get('preview_edge', current_edge))
+            quality = normalize_preview_quality(data.get('preview_quality', current_quality))
             resolve_preview_root(value, create=True)
         except ValueError as exc:
             abort(400, str(exc))
@@ -387,14 +442,16 @@ def create_app():
         with Session.begin() as db:
             if active_scan(db):
                 abort(409, 'Cannot change preview settings while a scan is active')
-            for key, setting_value in ((PREVIEW_FOLDER_KEY, value), (PREVIEW_EDGE_KEY, str(edge))):
+            for key, setting_value in ((PREVIEW_FOLDER_KEY, value), (PREVIEW_EDGE_KEY, str(edge)),
+                                       (PREVIEW_QUALITY_KEY, str(quality))):
                 setting = db.get(Setting, key)
                 if setting is None:
                     db.add(Setting(key=key, value=setting_value))
                 else:
                     setting.value = setting_value
         with Session() as db:
-            return jsonify(**preview_stats(db), **storage_info(), preview_edge_options=PREVIEW_EDGES, active=False)
+            return jsonify(**preview_stats(db), **storage_info(), preview_edge_options=PREVIEW_EDGES,
+                           preview_quality_options=PREVIEW_QUALITIES, active=False)
 
     def purge_tree(root, kind):
         removed = 0
@@ -433,7 +490,12 @@ def create_app():
         if legacy != current_root:
             roots.append(legacy)
         removed = bytes_removed = 0
+        seen = set()
         for root in roots:
+            resolved = root.resolve(strict=False)
+            if resolved in seen:
+                continue
+            seen.add(resolved)
             count, size = purge_tree(root, kind)
             removed += count
             bytes_removed += size
@@ -468,7 +530,7 @@ def create_app():
             return None
         return {name: getattr(job, name) for name in ('id', 'state', 'discovered', 'indexed', 'skipped', 'errors', 'current_path', 'message', 'cancel')} | {'updated_at': job.updated_at.isoformat() + 'Z'}
 
-    def queue_job(mode='scan', force=False):
+    def queue_job(mode='scan', force=False, skip_previews=False):
         with engine.connect() as connection:
             mysql = connection.dialect.name == 'mysql'
             if mysql and connection.scalar(text("SELECT GET_LOCK('raw_catalog_scan_queue', 5)")) != 1:
@@ -479,11 +541,14 @@ def create_app():
                     if db.scalar(select(Scan).where(Scan.state.in_(['queued', 'running'])).limit(1)):
                         abort(409, 'A scan or rebuild is already queued or running')
                     messages = {'thumbnails': 'Thumbnail rebuild queued', 'previews': 'Preview rebuild queued'}
-                    job = Scan(force=force, message=messages.get(mode, 'Waiting for indexer'))
+                    default_message = 'Waiting for indexer (previews on demand)' if skip_previews else 'Waiting for indexer'
+                    job = Scan(force=force, message=messages.get(mode, default_message))
                     db.add(job)
                     db.flush()
                     if mode != 'scan':
                         db.add(Setting(key=SCAN_MODE_PREFIX + str(job.id), value=mode))
+                    if mode == 'scan' and skip_previews:
+                        db.add(Setting(key=SCAN_SKIP_PREVIEWS_PREFIX + str(job.id), value='1'))
                     result = serialize_scan(job)
             finally:
                 if mysql:
@@ -516,7 +581,8 @@ def create_app():
     @app.post('/api/scan')
     def start_scan():
         data = request.get_json(silent=True) or {}
-        return jsonify(scan=queue_job('scan', force=data.get('force') is True)), 202
+        return jsonify(scan=queue_job('scan', force=data.get('force') is True,
+                                      skip_previews=data.get('skip_previews') is True)), 202
 
     @app.post('/api/scan/cancel')
     def cancel_scan():
