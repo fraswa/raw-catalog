@@ -5,11 +5,11 @@
 <div id="settingsApp" hidden>
 <header><div class="brand"><span class="mark">R / C</span><div><strong>RAW Catalog</strong><span>Settings</span></div></div><div class="header-actions"><a class="button-link" href="/">Library</a><button id="signOut">Sign out</button></div></header>
 <main class="settings-main">
-<div class="title-row"><div><p class="eyebrow">SETTINGS</p><h1>Thumbnail storage</h1></div><span class="read-only">Originals remain read-only</span></div>
+<div class="title-row"><div><p class="eyebrow">SETTINGS</p><h1>Generated media storage</h1></div><span class="read-only">Originals remain read-only</span></div>
 <div id="settingsError" class="error" role="alert" hidden></div>
 <section class="settings-card">
-<div class="settings-heading"><div><p class="eyebrow">STORAGE</p><h2>Generated thumbnails</h2></div><span id="settingsState" class="state-pill">Ready</span></div>
-<p class="settings-copy">Thumbnails are stored separately from full previews. The folder must stay inside the app cache volume.</p>
+<div class="settings-heading"><div><p class="eyebrow">THUMBNAILS</p><h2>Generated thumbnails</h2></div><span id="settingsState" class="state-pill">Ready</span></div>
+<p class="settings-copy">480px thumbnails are stored separately from full previews. The folder must stay inside the app cache volume.</p>
 <div class="path-box"><span>App cache root</span><strong id="cacheRoot">/data/cache</strong></div>
 <form id="thumbnailFolderForm" class="settings-form"><label for="thumbnailFolder">Thumbnail folder inside app cache</label><div class="inline-form"><input id="thumbnailFolder" type="text" maxlength="1024" autocomplete="off" spellcheck="false" placeholder="thumbnails" required><button id="saveFolder" class="primary" type="submit">Change folder</button></div><p class="hint">Example: <code>thumbnails</code> or <code>cache/thumbs</code>. Absolute paths and <code>..</code> are rejected.</p></form>
 <div class="path-box"><span>Current thumbnail path</span><strong id="thumbnailPath">—</strong></div>
@@ -22,8 +22,27 @@
 <p id="estimateBasis" class="hint"></p>
 <div class="danger-row"><div><strong>Rebuild thumbnails</strong><span>Regenerates only 480px thumbnails from indexed originals. Metadata and full previews are not rebuilt.</span></div><button id="rebuildThumbnails" class="primary">Rebuild thumbnails</button></div>
 <div class="danger-row"><div><strong>Purge thumbnails</strong><span>Deletes generated thumbnail JPEGs from current and legacy thumbnail locations. Originals and full previews are untouched.</span></div><button id="purgeThumbnails">Purge thumbnails</button></div>
-<p id="actionMessage" class="action-message"></p>
+<p id="thumbnailActionMessage" class="action-message"></p>
 </section>
+
+<section class="settings-card">
+<div class="settings-heading"><div><p class="eyebrow">PREVIEWS</p><h2>Full previews</h2></div></div>
+<p class="settings-copy">Large JPEG previews have an independent storage folder. Existing legacy previews remain readable after a folder change until you rebuild or purge them.</p>
+<div class="path-box"><span>App cache root</span><strong id="previewCacheRoot">/data/cache</strong></div>
+<form id="previewFolderForm" class="settings-form"><label for="previewFolder">Preview folder inside app cache</label><div class="inline-form"><input id="previewFolder" type="text" maxlength="1024" autocomplete="off" spellcheck="false" placeholder="previews" required><button id="savePreviewFolder" class="primary" type="submit">Change folder</button></div><p class="hint">Example: <code>previews</code> or <code>cache/previews</code>. Absolute paths and <code>..</code> are rejected.</p></form>
+<div class="path-box"><span>Current preview path</span><strong id="previewPath">—</strong></div>
+<div class="stats-grid">
+<div class="stat"><span>Cached previews</span><strong id="previewFiles">—</strong></div>
+<div class="stat"><span>Current size</span><strong id="previewBytes">—</strong></div>
+<div class="stat"><span>Catalog photos</span><strong id="previewEligiblePhotos">—</strong></div>
+<div class="stat"><span>Estimated full cache</span><strong id="previewEstimatedBytes">—</strong></div>
+</div>
+<p id="previewEstimateBasis" class="hint"></p>
+<div class="danger-row"><div><strong>Rebuild previews</strong><span>Regenerates only large previews from indexed originals. Metadata and thumbnails are not rebuilt.</span></div><button id="rebuildPreviews" class="primary">Rebuild previews</button></div>
+<div class="danger-row"><div><strong>Purge previews</strong><span>Deletes generated preview JPEGs from current and legacy locations. Originals and thumbnails are untouched.</span></div><button id="purgePreviews">Purge previews</button></div>
+<p id="previewActionMessage" class="action-message"></p>
+</section>
+
 <section class="settings-card">
 <div class="settings-heading"><div><p class="eyebrow">WORKER</p><h2>Current job</h2></div></div>
 <p id="jobMessage" class="settings-copy">No active scan or rebuild.</p>
@@ -31,6 +50,6 @@
 <button id="cancelJob" hidden>Cancel current job</button>
 </section>
 </main>
-<footer>RAW Catalog <span>Thumbnail storage is managed inside the app cache volume</span></footer>
+<footer>RAW Catalog <span>Generated media is managed inside the app cache volume</span></footer>
 </div>
 </body></html>
