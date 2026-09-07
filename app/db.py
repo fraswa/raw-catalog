@@ -46,6 +46,12 @@ class Scan(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
+class Setting(Base):
+    __tablename__ = 'settings'
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default='')
+
+
 engine = create_engine(os.environ.get('DATABASE_URL', 'sqlite:////tmp/raw-catalog-dev.db'), pool_pre_ping=True)
 Session = sessionmaker(engine, expire_on_commit=False)
 
