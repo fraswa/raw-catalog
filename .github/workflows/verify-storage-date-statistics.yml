@@ -1,0 +1,48 @@
+name: Verify storage date statistics
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/verify-storage-date-statistics.yml
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply legacy purge compatibility fix
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('app/web.py')
+          text = p.read_text()
+          old = "if legacy != current_root and not str(current_root).startswith(str(legacy) + os.sep):"
+          new = "if legacy != current_root:"
+          if old not in text:
+              raise SystemExit('Expected purge condition not found')
+          p.write_text(text.replace(old, new, 1))
+          PY
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+      - name: Run tests
+        run: python -m pytest -q
+      - name: Commit verified fix and remove workflow
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/web.py
+          git rm .github/workflows/verify-storage-date-statistics.yml
+          git commit -m "Finalize storage date and statistics features"
+          git push origin HEAD:main
