@@ -24,7 +24,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pytest
       - name: Run tests
-        run: pytest -q
+        run: PYTHONPATH=. python -m pytest -q
       - name: Remove temporary workflow
         if: success()
         run: |
