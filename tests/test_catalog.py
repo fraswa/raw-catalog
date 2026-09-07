@@ -13,7 +13,7 @@ os.environ['DATABASE_URL'] = 'sqlite:///' + str(Path(_temp.name) / 'test.db')
 os.environ['SECRET_KEY'] = 'test-secret-key-with-more-than-thirty-two-characters'
 os.environ['CATALOG_PASSWORD'] = 'test-password-long'
 os.environ['CACHE_DIR'] = str(Path(_temp.name) / 'cache')
-from app.db import Base, engine, Session, Photo, Scan, init_db
+from app.db import Base, engine, Session, Photo, Scan, Setting, init_db
 from app.web import create_app
 from app import worker
 from app.imaging import orient, make_previews, cache_file
@@ -72,6 +72,52 @@ def test_job_queue_cancel_and_csrf(client):
     assert client.post('/api/scan',json={},headers=headers).status_code == 409
     assert client.post('/api/scan/cancel',headers=headers).status_code == 200
     assert client.get('/api/scan').json['scan']['cancel'] is True
+
+
+def test_folder_browser_selection_and_thumbnail_purge(client, tmp_path, monkeypatch):
+    root = tmp_path / 'photos'; root.mkdir()
+    selected = root / '2026'; selected.mkdir()
+    (selected / 'session').mkdir()
+    outside = tmp_path / 'outside'; outside.mkdir()
+    (root / 'outside-link').symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv('PHOTO_ROOT', str(root))
+    cache = tmp_path / 'cache'; cache.mkdir()
+    monkeypatch.setenv('CACHE_DIR', str(cache))
+    headers = {'X-CSRF-Token':client.csrf}
+
+    data = client.get('/api/folders').json
+    assert [item['name'] for item in data['directories']] == ['2026']
+    assert client.get('/api/folders', query_string={'path':'../outside'}).status_code == 400
+    assert client.get('/api/folders', query_string={'path':'outside-link'}).status_code == 400
+
+    response = client.post('/api/folders/select', json={'path':'2026'}, headers=headers)
+    assert response.status_code == 200
+    assert response.json['selected_display'] == '/photos/2026'
+    assert client.get('/api/scan').json['root'] == '/photos/2026'
+    browse = client.get('/api/folders', query_string={'path':'2026'}).json
+    assert browse['parent'] == '' and browse['directories'][0]['path'] == '2026/session'
+
+    key = 'a' * 64
+    thumb = cache_file(cache, key, 'thumb'); preview = cache_file(cache, key, 'preview')
+    thumb.parent.mkdir(parents=True, exist_ok=True)
+    thumb.write_bytes(b'thumbnail'); preview.write_bytes(b'preview')
+    purged = client.delete('/api/cache/thumbnails', headers=headers)
+    assert purged.status_code == 200 and purged.json['removed'] == 1
+    assert not thumb.exists() and preview.exists()
+
+    with Session.begin() as db:
+        db.add(Scan(state='running'))
+    assert client.post('/api/folders/select', json={'path':''}, headers=headers).status_code == 409
+    assert client.delete('/api/cache/thumbnails', headers=headers).status_code == 409
+
+
+def test_worker_uses_selected_subfolder(tmp_path, monkeypatch):
+    root = tmp_path / 'photos'; root.mkdir()
+    selected = root / 'selected'; selected.mkdir()
+    monkeypatch.setattr(worker, 'ROOT', root)
+    with Session.begin() as db:
+        db.add(Setting(key='selected_photo_folder', value='selected'))
+    assert worker.selected_scan_root() == selected.resolve()
 
 
 def fake_previews(path, meta, cache, key):
