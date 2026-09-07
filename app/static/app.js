@@ -14,7 +14,13 @@ async function api(url, options = {}) {
 }
 function error(err) { $('error').textContent = err.message; $('error').hidden = false; }
 function showLogin() { authenticated = false; clearTimeout(timer); $('application').hidden = true; $('login').hidden = false; if ($('viewer').open) $('viewer').close(); }
-function params() { const p = new URLSearchParams(); for (const [name, id] of [['camera','camera'],['lens','lens'],['q','query']]) if ($(id).value) p.set(name,$(id).value); return p; }
+function params() {
+  const p = new URLSearchParams();
+  for (const [name, id] of [['camera','camera'],['lens','lens'],['q','query'],['date_from','dateFrom'],['date_to','dateTo'],['sort','sort']]) {
+    if ($(id).value && !(name === 'sort' && $(id).value === 'indexed_desc')) p.set(name,$(id).value);
+  }
+  return p;
+}
 function optionList(id, values) {
   const select = $(id), selected = select.value;
   select.replaceChildren(new Option(id === 'camera' ? 'All cameras' : 'All lenses', ''));
@@ -33,7 +39,7 @@ function card(photo, index) {
   button.append(wrap,info); button.onclick = () => view(index); return button;
 }
 async function search(append = false) {
-  if (append && (loading || !cursor)) return false;
+  if (append && (loading || cursor === null)) return false;
   const rev = append ? revision : ++revision;
   loading = true; $('loadMore').disabled = true; $('error').hidden = true;
   const p = params(); if (append) p.set('after', cursor);
@@ -47,27 +53,29 @@ async function search(append = false) {
     if (facets) { optionList('camera',facets.camera); optionList('lens',facets.lens); }
     $('count').textContent = nf.format(total);
     $('summary').textContent = `${nf.format(items.length)} of ${nf.format(total)} photographs`;
-    $('loadMore').hidden = !cursor; $('empty').hidden = items.length > 0;
-    const filtered = params().toString().length > 0;
+    const labels = {indexed_desc:'Newest indexed first',date_desc:'Newest capture date first',date_asc:'Oldest capture date first'};
+    $('sortSummary').textContent = labels[data.sort] || labels.indexed_desc;
+    $('loadMore').hidden = cursor === null; $('empty').hidden = items.length > 0;
+    const filtered = ['camera','lens','query','dateFrom','dateTo'].some(id => $(id).value);
     $('emptyTitle').textContent = filtered ? 'No matching photographs' : 'Your archive starts here';
-    $('emptyText').textContent = filtered ? 'Try a different camera or lens, or clear your filters.' : 'Click Index photos to scan your configured photo folder.';
+    $('emptyText').textContent = filtered ? 'Try different filters or a wider capture-date range.' : 'Click Index photos to scan your configured photo folder.';
     return true;
   } catch(err) { if (rev === revision) { error(err); $('summary').textContent = 'Could not load photographs'; } return false; }
   finally { if (rev === revision) { loading = false; $('loadMore').disabled = false; } }
 }
 async function view(index) {
   if (index < 0) return;
-  if (index >= items.length && cursor) await search(true);
+  if (index >= items.length && cursor !== null) await search(true);
   if (index >= items.length) return;
   viewing = index; const photo = items[index], rev = ++detailRevision;
   $('viewerTitle').textContent = photo.filename; $('viewerPosition').textContent = `${index+1} of ${nf.format(total)} matching photographs`;
   $('viewerCamera').textContent = photo.camera; $('viewerLens').textContent = photo.lens;
   $('viewerPath').textContent = ''; $('metadata').textContent = ''; $('exposure').textContent = '';
-  $('previous').disabled = index === 0; $('next').disabled = index === items.length-1 && !cursor;
+  $('previous').disabled = index === 0; $('next').disabled = index === items.length-1 && cursor === null;
   $('previewImage').hidden = true; $('previewImage').removeAttribute('src');
   $('previewMessage').hidden = false; $('previewMessage').textContent = photo.preview ? 'Loading preview…' : 'Preview unavailable. Check file details for the indexing error.';
   $('previewImage').onload = () => { if(rev !== detailRevision) return; $('previewImage').hidden = false; $('previewMessage').hidden = true; };
-  $('previewImage').onerror = () => { if(rev !== detailRevision) return; $('previewImage').hidden = true; $('previewMessage').hidden = false; $('previewMessage').textContent = 'Preview could not be loaded. Run a scan to regenerate missing previews.'; };
+  $('previewImage').onerror = () => { if(rev !== detailRevision) return; $('previewImage').hidden = true; $('previewMessage').hidden = false; $('previewMessage').textContent = 'Preview could not be loaded. Rebuild previews from Settings.'; };
   if (photo.preview) { $('previewImage').alt = photo.filename; $('previewImage').src = photo.preview; }
   if (!$('viewer').open) $('viewer').showModal();
   try {
@@ -80,35 +88,24 @@ async function view(index) {
 }
 async function loadFolders(path = '') {
   const data = await api('/api/folders?path=' + encodeURIComponent(path));
-  browsePath = data.current;
-  $('folderCurrent').textContent = data.current_display;
-  $('folderUp').disabled = data.parent === null;
-  $('folderUp').dataset.path = data.parent ?? '';
+  browsePath = data.current; $('folderCurrent').textContent = data.current_display;
+  $('folderUp').disabled = data.parent === null; $('folderUp').dataset.path = data.parent ?? '';
   $('folderList').replaceChildren();
-  if (!data.directories.length) {
-    const empty = document.createElement('span'); empty.className = 'folder-empty'; empty.textContent = 'No subfolders'; $('folderList').append(empty);
-  }
-  for (const folder of data.directories) {
-    const button = document.createElement('button'); button.className = 'folder-entry'; button.textContent = folder.name;
-    button.onclick = () => loadFolders(folder.path).catch(error);
-    $('folderList').append(button);
-  }
+  if (!data.directories.length) { const empty = document.createElement('span'); empty.className = 'folder-empty'; empty.textContent = 'No subfolders'; $('folderList').append(empty); }
+  for (const folder of data.directories) { const button = document.createElement('button'); button.className = 'folder-entry'; button.textContent = folder.name; button.onclick = () => loadFolders(folder.path).catch(error); $('folderList').append(button); }
   return data;
 }
 async function pollScan() {
   if (!authenticated) return;
   try {
     const data = await api('/api/scan'), job = data.scan, active = job && ['queued','running'].includes(job.state);
-    const rebuilding = active && (job.message || '').toLowerCase().includes('thumbnail');
-    $('scanButton').disabled = !!active; $('scanButton').textContent = rebuilding ? 'Rebuilding thumbnails…' : (active ? 'Indexing…' : 'Index photos');
-    $('force').disabled = !!active; $('cancelScan').hidden = !active;
-    $('browseFolder').disabled = !!active;
+    const message = (job?.message || '').toLowerCase();
+    $('scanButton').disabled = !!active; $('scanButton').textContent = active ? (message.includes('thumbnail') ? 'Rebuilding thumbnails…' : message.includes('preview') ? 'Rebuilding previews…' : 'Indexing…') : 'Index photos';
+    $('force').disabled = !!active; $('cancelScan').hidden = !active; $('browseFolder').disabled = !!active;
     $('cancelScan').disabled = !!job?.cancel; $('cancelScan').textContent = job?.cancel ? 'Cancelling…' : 'Cancel scan';
-    $('scanState').textContent = job ? job.state : 'Ready';
-    $('scanMessage').textContent = job ? job.message : `Photo folder: ${data.root}`;
+    $('scanState').textContent = job ? job.state : 'Ready'; $('scanMessage').textContent = job ? job.message : `Photo folder: ${data.root}`;
     $('scanCounts').textContent = job ? `${nf.format(job.discovered)} found · ${nf.format(job.indexed)} processed · ${nf.format(job.skipped)} unchanged · ${nf.format(job.errors)} errors` : '';
-    $('scanPath').textContent = job?.current_path || '';
-    $('selectedFolder').textContent = data.root; $('selectedFolder').dataset.path = data.selected || '';
+    $('scanPath').textContent = job?.current_path || ''; $('selectedFolder').textContent = data.root; $('selectedFolder').dataset.path = data.selected || '';
     if (job && active && Date.now() - Date.parse(job.updated_at) > 300000) $('scanMessage').textContent += ' — No recent progress. Check worker logs.';
     const signature = job ? `${job.id}:${job.state}` : '';
     if (scanSignature && signature !== scanSignature && !active && !$('viewer').open) await search();
@@ -116,35 +113,20 @@ async function pollScan() {
   } catch(err) { error(err); }
   finally { if(authenticated) timer = setTimeout(pollScan, 3000); }
 }
-async function enter() {
-  authenticated = true; $('login').hidden = true; $('application').hidden = false;
-  await search(); clearTimeout(timer); pollScan();
-}
+async function enter() { authenticated = true; $('login').hidden = true; $('application').hidden = false; await search(); clearTimeout(timer); pollScan(); }
 $('loginForm').onsubmit = async e => { e.preventDefault(); $('loginError').textContent = ''; try { const state = await api('/api/session'); csrf = state.csrf; const result = await api('/api/login', {method:'POST',body:JSON.stringify({password:$('password').value})}); csrf = result.csrf; $('password').value = ''; await enter(); } catch(err) { $('loginError').textContent = err.message; } };
 $('signOut').onclick = async () => { try { await api('/api/logout',{method:'POST'}); showLogin(); } catch(err) { error(err); } };
 $('filters').onsubmit = e => { e.preventDefault(); search(); };
-$('camera').onchange = $('lens').onchange = () => search();
+for (const id of ['camera','lens','dateFrom','dateTo','sort']) $(id).onchange = () => search();
 let debounce; $('query').oninput = () => { clearTimeout(debounce); debounce = setTimeout(() => search(),300); };
-$('reset').onclick = () => { clearTimeout(debounce); $('camera').value = ''; $('lens').value = ''; $('query').value = ''; search(); };
+$('reset').onclick = () => { clearTimeout(debounce); for(const id of ['camera','lens','query','dateFrom','dateTo']) $(id).value=''; $('sort').value='indexed_desc'; search(); };
 $('loadMore').onclick = () => search(true);
 $('scanButton').onclick = async () => { $('scanButton').disabled = true; try { await api('/api/scan',{method:'POST',body:JSON.stringify({force:$('force').checked})}); $('scanPanel').open = true; clearTimeout(timer); await pollScan(); } catch(err) { error(err); $('scanButton').disabled = false; } };
 $('cancelScan').onclick = async () => { try { await api('/api/scan/cancel',{method:'POST'}); clearTimeout(timer); await pollScan(); } catch(err) { error(err); } };
-$('browseFolder').onclick = async () => {
-  $('folderBrowser').hidden = false;
-  try { await loadFolders($('selectedFolder').dataset.path || ''); }
-  catch(err) { try { await loadFolders(''); } catch(rootErr) { error(rootErr); $('folderBrowser').hidden = true; } }
-};
+$('browseFolder').onclick = async () => { $('folderBrowser').hidden = false; try { await loadFolders($('selectedFolder').dataset.path || ''); } catch(err) { try { await loadFolders(''); } catch(rootErr) { error(rootErr); $('folderBrowser').hidden = true; } } };
 $('closeFolderBrowser').onclick = () => { $('folderBrowser').hidden = true; };
 $('folderUp').onclick = () => loadFolders($('folderUp').dataset.path || '').catch(error);
-$('selectFolder').onclick = async () => {
-  $('selectFolder').disabled = true;
-  try {
-    const data = await api('/api/folders/select',{method:'POST',body:JSON.stringify({path:browsePath})});
-    $('selectedFolder').textContent = data.selected_display; $('selectedFolder').dataset.path = data.selected;
-    $('folderBrowser').hidden = true; clearTimeout(timer); await pollScan();
-  } catch(err) { error(err); }
-  finally { $('selectFolder').disabled = false; }
-};
+$('selectFolder').onclick = async () => { $('selectFolder').disabled = true; try { const data = await api('/api/folders/select',{method:'POST',body:JSON.stringify({path:browsePath})}); $('selectedFolder').textContent = data.selected_display; $('selectedFolder').dataset.path = data.selected; $('folderBrowser').hidden = true; clearTimeout(timer); await pollScan(); } catch(err) { error(err); } finally { $('selectFolder').disabled = false; } };
 $('closeViewer').onclick = () => $('viewer').close();
 $('viewer').addEventListener('close', () => { detailRevision++; if(document.fullscreenElement) document.exitFullscreen().catch(()=>{}); });
 $('previous').onclick = () => view(viewing-1); $('next').onclick = () => view(viewing+1);
