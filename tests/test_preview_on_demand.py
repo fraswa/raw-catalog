@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 _temp = tempfile.TemporaryDirectory()
 os.environ.setdefault('DATABASE_URL', 'sqlite:///' + str(Path(_temp.name) / 'preview-policy.db'))
@@ -12,7 +13,7 @@ os.environ.setdefault('SECRET_KEY', 'test-secret-key-with-more-than-thirty-two-c
 os.environ.setdefault('CATALOG_PASSWORD', 'test-password-long')
 
 from app.db import Base, engine, Session, Photo, Scan, Setting, init_db
-from app import worker
+from app import worker, imaging
 import app.web as web
 from app.imaging import cache_file
 from app.web import create_app
@@ -168,7 +169,6 @@ def test_missing_preview_generated_once_on_open(client, tmp_path, monkeypatch):
         assert db.get(Photo, photo_id).preview_error is None
 
 
-
 def test_parallelism_setting_validation(client):
     headers = {'X-CSRF-Token': client.csrf}
     queued = client.post('/api/scan', json={'parallelism': 4}, headers=headers)
@@ -229,3 +229,28 @@ def test_parallel_scan_executes_generated_media_concurrently(tmp_path, monkeypat
         assert job.errors == 0
         assert db.query(Photo).count() == 8
     assert peak >= 2
+
+
+def test_thumbnail_jpeg_skips_optimization(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(imaging, 'open_preview', lambda path, metadata: Image.new('RGB', (32, 32)))
+
+    def fake_save(image, output, edge, quality, optimize=True):
+        calls.append((edge, quality, optimize))
+
+    monkeypatch.setattr(imaging, '_save_scaled', fake_save)
+    imaging.make_thumbnail(tmp_path / 'one.cr3', {}, tmp_path / 'thumbs', 'a' * 64)
+    assert calls == [(480, 80, False)]
+
+
+def test_combined_preview_keeps_preview_optimized_but_thumbnail_fast(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(imaging, 'open_preview', lambda path, metadata: Image.new('RGB', (64, 64)))
+
+    def fake_save(image, output, edge, quality, optimize=True):
+        calls.append((edge, quality, optimize))
+
+    monkeypatch.setattr(imaging, '_save_scaled', fake_save)
+    imaging.make_previews(tmp_path / 'one.cr3', {}, tmp_path / 'previews', 'b' * 64,
+                          tmp_path / 'thumbs', 1920, 88)
+    assert calls == [(1920, 88, True), (480, 80, False)]
