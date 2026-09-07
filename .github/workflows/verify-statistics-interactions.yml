@@ -1,0 +1,58 @@
+name: Verify interactive statistics
+on:
+  push:
+permissions:
+  contents: write
+jobs:
+  test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Run full tests
+        run: python -m pytest -q
+      - name: Verify per-camera aggregation and deep links
+        run: |
+          python - <<'PY'
+          import os, tempfile
+          from pathlib import Path
+          from datetime import datetime
+          tmp = tempfile.TemporaryDirectory()
+          os.environ['DATABASE_URL'] = 'sqlite:///' + str(Path(tmp.name) / 'stats.db')
+          from app.db import Base, engine, Session, Photo, init_db
+          from app.statistics import build_statistics
+          Base.metadata.drop_all(engine); init_db()
+          with Session.begin() as db:
+              db.add_all([
+                  Photo(path_hash='1', path='/photos/1.cr3', filename='1.cr3', size=1, mtime_ns=1, camera='Canon EOS R6', lens='RF 50mm', taken_at=datetime(2025,1,1), metadata_json={'FocalLength':'50 mm','FNumber':'1.8'}),
+                  Photo(path_hash='2', path='/photos/2.cr3', filename='2.cr3', size=1, mtime_ns=1, camera='Canon EOS R6', lens='RF 50mm', taken_at=datetime(2025,2,1), metadata_json={'FocalLength':'50 mm','FNumber':'2.8'}),
+                  Photo(path_hash='3', path='/photos/3.nef', filename='3.nef', size=1, mtime_ns=1, camera='Nikon D3', lens='AF-S 24-70', taken_at=datetime(2024,1,1), metadata_json={'FocalLength':'35 mm','FNumber':'4'}),
+              ])
+          with Session.begin() as db:
+              data = build_statistics(db, force=True)
+          canon = data['camera_breakdowns']['Canon EOS R6']
+          assert canon['total_photos'] == 2
+          assert canon['distinct_lenses'] == 1
+          assert canon['lenses'][0] == {'value':'RF 50mm','count':2}
+          assert canon['focal_lengths'][0] == {'value':'50 mm','count':2}
+          assert canon['yearly'] == [{'year':'2025','count':2}]
+          assert any(row['count'] for row in canon['trend'])
+          js = Path('app/static/statistics.js').read_text()
+          appjs = Path('app/static/app.js').read_text()
+          assert "libraryUrl({camera" in js and "libraryParam:'lens'" in js
+          assert 'selectCamera' in js and 'camera_breakdowns' in js
+          assert 'applyUrlFilters' in appjs and 'location.search' in appjs
+          PY
+      - name: Remove temporary workflow
+        run: |
+          rm .github/workflows/verify-statistics-interactions.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/verify-statistics-interactions.yml
+          git commit -m 'Remove temporary statistics verification workflow'
+          git push
