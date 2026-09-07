@@ -1,5 +1,4 @@
 import hashlib
-import importlib
 import os
 import tempfile
 from pathlib import Path
@@ -17,6 +16,7 @@ from app.db import Base, engine, Session, Photo, Scan, Setting, init_db
 from app.web import create_app
 from app import worker
 from app.imaging import orient, make_previews, cache_file
+from app.storage import resolve_thumbnail_root
 
 
 @pytest.fixture(autouse=True)
@@ -98,16 +98,57 @@ def test_folder_browser_selection_and_thumbnail_purge(client, tmp_path, monkeypa
     assert browse['parent'] == '' and browse['directories'][0]['path'] == '2026/session'
 
     key = 'a' * 64
-    thumb = cache_file(cache, key, 'thumb'); preview = cache_file(cache, key, 'preview')
-    thumb.parent.mkdir(parents=True, exist_ok=True)
-    thumb.write_bytes(b'thumbnail'); preview.write_bytes(b'preview')
+    legacy_thumb = cache_file(cache, key, 'thumb')
+    configured_thumb = cache_file(cache / 'thumbnails', 'b' * 64, 'thumb')
+    preview = cache_file(cache, key, 'preview')
+    for path, data in [(legacy_thumb,b'legacy-thumb'), (configured_thumb,b'new-thumb'), (preview,b'preview')]:
+        path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data)
     purged = client.delete('/api/cache/thumbnails', headers=headers)
-    assert purged.status_code == 200 and purged.json['removed'] == 1
-    assert not thumb.exists() and preview.exists()
+    assert purged.status_code == 200 and purged.json['removed'] == 2
+    assert not legacy_thumb.exists() and not configured_thumb.exists() and preview.exists()
 
     with Session.begin() as db:
         db.add(Scan(state='running'))
     assert client.post('/api/folders/select', json={'path':''}, headers=headers).status_code == 409
+    assert client.delete('/api/cache/thumbnails', headers=headers).status_code == 409
+
+
+def test_thumbnail_settings_stats_and_rebuild_queue(client, tmp_path, monkeypatch):
+    cache = tmp_path / 'cache'
+    monkeypatch.setenv('CACHE_DIR', str(cache))
+    headers = {'X-CSRF-Token':client.csrf}
+    with Session.begin() as db:
+        for i in range(2):
+            db.add(Photo(path_hash=f'cache-{i}', path=f'/photos/{i}.cr3', filename=f'{i}.cr3',
+                         size=10, mtime_ns=1, cache_key=str(i + 1) * 64))
+
+    initial = client.get('/api/settings/thumbnails').json
+    assert initial['folder'] == 'thumbnails'
+    assert initial['eligible_photos'] == 2
+    assert initial['estimated_bytes'] == 2 * 60 * 1024
+    assert initial['files'] == 0
+
+    assert client.put('/api/settings/thumbnails', json={'folder':'/tmp/thumbs'}, headers=headers).status_code == 400
+    assert client.put('/api/settings/thumbnails', json={'folder':'../thumbs'}, headers=headers).status_code == 400
+    changed = client.put('/api/settings/thumbnails', json={'folder':'cache/thumbs'}, headers=headers)
+    assert changed.status_code == 200 and changed.json['folder'] == 'cache/thumbs'
+    assert Path(changed.json['path']).is_dir()
+
+    root = resolve_thumbnail_root('cache/thumbs', create=True)
+    first = cache_file(root, '1' * 64, 'thumb'); second = cache_file(root, '2' * 64, 'thumb')
+    first.parent.mkdir(parents=True, exist_ok=True); second.parent.mkdir(parents=True, exist_ok=True)
+    first.write_bytes(b'x' * 100); second.write_bytes(b'y' * 300)
+    stats = client.get('/api/settings/thumbnails').json
+    assert stats['files'] == 2 and stats['bytes'] == 400
+    assert stats['estimated_per_thumbnail'] == 200 and stats['estimated_bytes'] == 400
+    assert stats['estimate_basis'] == 'current average'
+
+    queued = client.post('/api/cache/thumbnails/rebuild', headers=headers)
+    assert queued.status_code == 202
+    jid = queued.json['scan']['id']
+    with Session() as db:
+        assert db.get(Setting, f'scan_mode:{jid}').value == 'thumbnails'
+    assert client.put('/api/settings/thumbnails', json={'folder':'other'}, headers=headers).status_code == 409
     assert client.delete('/api/cache/thumbnails', headers=headers).status_code == 409
 
 
@@ -120,9 +161,9 @@ def test_worker_uses_selected_subfolder(tmp_path, monkeypatch):
     assert worker.selected_scan_root() == selected.resolve()
 
 
-def fake_previews(path, meta, cache, key):
-    for kind in ('thumb','preview'):
-        p = cache_file(cache,key,kind)
+def fake_previews(path, meta, cache, key, thumbnail_cache=None):
+    for kind, root in [('preview', cache), ('thumb', thumbnail_cache or cache)]:
+        p = cache_file(root, key, kind)
         p.parent.mkdir(parents=True,exist_ok=True)
         Image.new('RGB',(30,20),'red').save(p,'JPEG')
 
@@ -133,8 +174,10 @@ def test_recursive_incremental_and_preview_retry(tmp_path, monkeypatch):
     (nested/'ignore.txt').write_text('ignored')
     (nested/'loop').symlink_to(root, target_is_directory=True)
     (nested/'link.cr3').symlink_to(photo)
+    cache = tmp_path/'cache'
     monkeypatch.setattr(worker,'ROOT',root)
-    monkeypatch.setattr(worker,'CACHE',str(tmp_path/'cache'))
+    monkeypatch.setattr(worker,'CACHE',str(cache))
+    monkeypatch.setenv('CACHE_DIR',str(cache))
     calls=[]
     def metadata(paths):
         calls.extend(paths)
@@ -154,8 +197,8 @@ def test_recursive_incremental_and_preview_retry(tmp_path, monkeypatch):
     with Session() as db:
         p=db.query(Photo).one()
         assert p.camera=='Canon EOS R6' and p.taken_at.year==2026
-        cache_file(worker.CACHE,p.cache_key,'thumb').unlink()
-    assert run().indexed==1  # Missing cached preview is repaired.
+        cache_file(cache/'thumbnails',p.cache_key,'thumb').unlink()
+    assert run().indexed==1  # Missing cached thumbnail is repaired.
     photo.write_bytes(b'changed-raw-fixture')
     assert run().indexed==1
     with Session() as db:
@@ -170,8 +213,32 @@ def test_recursive_incremental_and_preview_retry(tmp_path, monkeypatch):
         assert p.cache_key is None and 'unsupported' in p.preview_error
 
 
+def test_thumbnail_only_rebuild(tmp_path, monkeypatch):
+    root = tmp_path / 'photos'; root.mkdir()
+    original = root / 'one.cr3'; original.write_bytes(b'raw')
+    cache = tmp_path / 'cache'
+    monkeypatch.setenv('CACHE_DIR', str(cache))
+    monkeypatch.setattr(worker, 'CACHE', str(cache))
+    key = 'c' * 64
+    with Session.begin() as db:
+        db.add(Photo(path_hash='rebuild', path=str(original), filename=original.name, size=3,
+                     mtime_ns=1, cache_key=key, metadata_json={'Orientation':1}))
+        job = Scan(); db.add(job); db.flush(); jid = job.id
+    def fake_thumbnail(path, metadata, thumbnail_cache, cache_key):
+        output = cache_file(thumbnail_cache, cache_key, 'thumb')
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b'thumb')
+    monkeypatch.setattr(worker, 'make_thumbnail', fake_thumbnail)
+    worker.rebuild_thumbnails(jid)
+    with Session() as db:
+        job = db.get(Scan, jid)
+        assert (job.state, job.discovered, job.indexed, job.errors) == ('done', 1, 1, 0)
+    assert cache_file(cache/'thumbnails', key, 'thumb').read_bytes() == b'thumb'
+
+
 def test_missing_root_fails_and_keeps_catalog(tmp_path,monkeypatch):
     seed(); monkeypatch.setattr(worker,'ROOT',tmp_path/'unmounted')
+    cache = tmp_path/'cache'; monkeypatch.setenv('CACHE_DIR', str(cache)); monkeypatch.setattr(worker,'CACHE',str(cache))
     with Session.begin() as db:
         j=Scan(); db.add(j); db.flush(); jid=j.id
     worker.scan(jid)
