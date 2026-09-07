@@ -33,9 +33,10 @@
 
 <section class="settings-card">
 <div class="settings-heading"><div><p class="eyebrow">PREVIEWS</p><h2>Full previews</h2></div></div>
-<p class="settings-copy">Large JPEG previews have an independent path and selectable maximum edge size.</p>
+<p class="settings-copy">Large JPEG previews have an independent path, maximum edge size, and JPEG quality. Missing previews can also be generated automatically when a photo is opened.</p>
 <form id="previewFolderForm" class="settings-form"><label for="previewFolder">Preview path</label><div class="inline-form"><input id="previewFolder" type="text" maxlength="2048" autocomplete="off" spellcheck="false" placeholder="/storage/previews" required><button id="savePreviewFolder" class="primary" type="submit">Save preview settings</button></div><p class="hint">Examples: <code>/storage/previews</code>, <code>/storage/photo-cache/previews</code>, or <code>/data/cache/previews</code>.</p>
-<label for="previewEdge" class="secondary-label">Maximum preview edge</label><select id="previewEdge"><option value="1280">1280 px</option><option value="1920">1920 px</option><option value="2560">2560 px</option><option value="3840">3840 px</option><option value="5120">5120 px</option></select><p class="hint">Changing size affects newly generated previews. Use Rebuild previews to apply it to the whole catalog.</p></form>
+<label for="previewEdge" class="secondary-label">Maximum preview edge</label><select id="previewEdge"><option value="1280">1280 px</option><option value="1920">1920 px</option><option value="2560">2560 px</option><option value="3840">3840 px</option><option value="5120">5120 px</option></select>
+<label for="previewQuality" class="secondary-label">JPEG quality</label><select id="previewQuality"><option value="60">60 — compact</option><option value="70">70</option><option value="80">80</option><option value="85">85</option><option value="88">88 — default</option><option value="90">90</option><option value="92">92</option><option value="95">95 — high</option></select><p class="hint">Changing size or quality affects newly generated and on-demand previews. Use Rebuild previews to apply both settings to the whole catalog.</p></form>
 <div class="path-box"><span>Current preview path</span><strong id="previewPath">—</strong></div>
 <div class="stats-grid">
 <div class="stat"><span>Cached previews</span><strong id="previewFiles">—</strong></div>
@@ -44,8 +45,8 @@
 <div class="stat"><span>Estimated full cache</span><strong id="previewEstimatedBytes">—</strong></div>
 </div>
 <p id="previewEstimateBasis" class="hint"></p>
-<div class="danger-row"><div><strong>Rebuild previews</strong><span>Regenerates previews at the selected size without rebuilding metadata or thumbnails.</span></div><button id="rebuildPreviews" class="primary">Rebuild previews</button></div>
-<div class="danger-row"><div><strong>Purge previews</strong><span>Deletes previews in the current location plus the legacy Docker cache. Thumbnails and originals are untouched.</span></div><button id="purgePreviews">Purge previews</button></div>
+<div class="danger-row"><div><strong>Rebuild previews</strong><span>Regenerates previews at the selected size and quality without rebuilding metadata or thumbnails.</span></div><button id="rebuildPreviews" class="primary">Rebuild previews</button></div>
+<div class="danger-row"><div><strong>Purge previews</strong><span>Deletes previews in the current location plus the legacy Docker cache. Thumbnails and originals are untouched; missing previews will be regenerated when opened.</span></div><button id="purgePreviews">Purge previews</button></div>
 <p id="previewActionMessage" class="action-message"></p>
 </section>
 
