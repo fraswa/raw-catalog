@@ -15,7 +15,6 @@ TAGS = ['Make', 'Model', 'LensModel', 'LensID', 'Lens', 'LensType', 'DateTimeOri
 
 
 def metadata_batch(paths):
-    # Argument list and absolute paths prevent option/shell injection, even with unusual filenames.
     result = subprocess.run(['exiftool', '-j', '-charset', 'filename=UTF8', '-Orientation#',
                              *['-' + t for t in TAGS if t != 'Orientation'], *map(str, paths)],
                             capture_output=True, timeout=180, check=False)
@@ -39,7 +38,6 @@ def orient(image, orientation):
 
 def open_preview(path, metadata):
     orientation = metadata.get('Orientation', 1)
-    # Extract the largest commonly available camera JPEG first; no RAW rendering needed.
     for tag in ('JpgFromRaw', 'PreviewImage'):
         result = subprocess.run(['exiftool', '-b', '-' + tag, str(path)],
                                 capture_output=True, timeout=90, check=False)
@@ -59,7 +57,6 @@ def open_preview(path, metadata):
             image.load()
             return orient(image, orientation)
         except (rawpy.LibRawNoThumbnailError, rawpy.LibRawUnsupportedThumbnailError, OSError):
-            # LibRaw applies orientation itself during postprocess.
             return Image.fromarray(raw.postprocess(use_camera_wb=True, half_size=True,
                                                    output_color=rawpy.ColorSpace.sRGB))
 
@@ -104,13 +101,13 @@ def make_thumbnail(path, metadata, thumbnail_cache, key):
         image.close()
 
 
-def make_preview(path, metadata, preview_cache, key):
+def make_preview(path, metadata, preview_cache, key, edge=None):
+    edge = int(edge or os.environ.get('PREVIEW_EDGE', '2560'))
     image = open_preview(path, metadata)
     try:
         converted = _srgb(image)
         try:
-            _save_scaled(converted, cache_file(preview_cache, key, 'preview'),
-                         int(os.environ.get('PREVIEW_EDGE', '2560')), 88)
+            _save_scaled(converted, cache_file(preview_cache, key, 'preview'), edge, 88)
         finally:
             if converted is not image:
                 converted.close()
@@ -118,14 +115,14 @@ def make_preview(path, metadata, preview_cache, key):
         image.close()
 
 
-def make_previews(path, metadata, preview_cache, key, thumbnail_cache=None):
+def make_previews(path, metadata, preview_cache, key, thumbnail_cache=None, preview_edge=None):
     thumbnail_cache = thumbnail_cache or preview_cache
+    edge = int(preview_edge or os.environ.get('PREVIEW_EDGE', '2560'))
     image = open_preview(path, metadata)
     try:
         converted = _srgb(image)
         try:
-            _save_scaled(converted, cache_file(preview_cache, key, 'preview'),
-                         int(os.environ.get('PREVIEW_EDGE', '2560')), 88)
+            _save_scaled(converted, cache_file(preview_cache, key, 'preview'), edge, 88)
             _save_scaled(converted, cache_file(thumbnail_cache, key, 'thumb'), 480, 80)
         finally:
             if converted is not image:
