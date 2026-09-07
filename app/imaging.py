@@ -13,9 +13,11 @@ from PIL import Image, ImageOps, ImageCms
 EXTENSIONS = {'.cr2', '.cr3', '.crw', '.nef', '.nrw', '.arw', '.srf', '.sr2', '.dng',
               '.raf', '.orf', '.rw2', '.rwl', '.pef', '.ptx', '.srw', '.3fr', '.fff',
               '.iiq', '.kdc', '.dcr', '.mos', '.mrw', '.raw', '.x3f'}
-TAGS = ['Make', 'Model', 'LensModel', 'LensID', 'Lens', 'LensType', 'DateTimeOriginal',
-        'CreateDate', 'ISO', 'FNumber', 'ExposureTime', 'FocalLength', 'ImageWidth',
-        'ImageHeight', 'Orientation', 'SerialNumber', 'LensSerialNumber', 'FileType']
+TAGS = ['Make', 'Model', 'LensMake', 'LensModel', 'LensID', 'Lens', 'LensType', 'LensMount',
+        'DateTimeOriginal', 'CreateDate', 'ISO', 'FNumber', 'ExposureTime', 'FocalLength',
+        'ImageWidth', 'ImageHeight', 'ExifImageWidth', 'ExifImageHeight', 'SensorSize',
+        'SensorWidth', 'SensorHeight', 'FocalPlaneXResolution', 'FocalPlaneYResolution',
+        'FocalPlaneResolutionUnit', 'Orientation', 'SerialNumber', 'LensSerialNumber', 'FileType']
 
 _sessions = set()
 _sessions_lock = threading.Lock()
