@@ -78,12 +78,6 @@ async function view(index) {
     $('exposure').textContent = [m.FocalLength, m.FNumber ? `f/${m.FNumber}` : null, m.ExposureTime ? `${m.ExposureTime} s` : null, m.ISO ? `ISO ${m.ISO}` : null].filter(Boolean).join(' · ');
   } catch(err) { if (rev === detailRevision) $('metadata').textContent = err.message; }
 }
-function formatBytes(value) {
-  if (!value) return '0 B';
-  const units = ['B','KB','MB','GB','TB'];
-  const index = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024)));
-  return `${(value / (1024 ** index)).toFixed(index ? 1 : 0)} ${units[index]}`;
-}
 async function loadFolders(path = '') {
   const data = await api('/api/folders?path=' + encodeURIComponent(path));
   browsePath = data.current;
@@ -105,13 +99,14 @@ async function pollScan() {
   if (!authenticated) return;
   try {
     const data = await api('/api/scan'), job = data.scan, active = job && ['queued','running'].includes(job.state);
-    $('scanButton').disabled = !!active; $('scanButton').textContent = active ? 'Indexing…' : 'Index photos';
+    const rebuilding = active && (job.message || '').toLowerCase().includes('thumbnail');
+    $('scanButton').disabled = !!active; $('scanButton').textContent = rebuilding ? 'Rebuilding thumbnails…' : (active ? 'Indexing…' : 'Index photos');
     $('force').disabled = !!active; $('cancelScan').hidden = !active;
-    $('browseFolder').disabled = !!active; $('purgeThumbnails').disabled = !!active;
+    $('browseFolder').disabled = !!active;
     $('cancelScan').disabled = !!job?.cancel; $('cancelScan').textContent = job?.cancel ? 'Cancelling…' : 'Cancel scan';
     $('scanState').textContent = job ? job.state : 'Ready';
     $('scanMessage').textContent = job ? job.message : `Photo folder: ${data.root}`;
-    $('scanCounts').textContent = job ? `${nf.format(job.discovered)} found · ${nf.format(job.indexed)} indexed · ${nf.format(job.skipped)} unchanged · ${nf.format(job.errors)} errors` : '';
+    $('scanCounts').textContent = job ? `${nf.format(job.discovered)} found · ${nf.format(job.indexed)} processed · ${nf.format(job.skipped)} unchanged · ${nf.format(job.errors)} errors` : '';
     $('scanPath').textContent = job?.current_path || '';
     $('selectedFolder').textContent = data.root; $('selectedFolder').dataset.path = data.selected || '';
     if (job && active && Date.now() - Date.parse(job.updated_at) > 300000) $('scanMessage').textContent += ' — No recent progress. Check worker logs.';
@@ -135,7 +130,7 @@ $('loadMore').onclick = () => search(true);
 $('scanButton').onclick = async () => { $('scanButton').disabled = true; try { await api('/api/scan',{method:'POST',body:JSON.stringify({force:$('force').checked})}); $('scanPanel').open = true; clearTimeout(timer); await pollScan(); } catch(err) { error(err); $('scanButton').disabled = false; } };
 $('cancelScan').onclick = async () => { try { await api('/api/scan/cancel',{method:'POST'}); clearTimeout(timer); await pollScan(); } catch(err) { error(err); } };
 $('browseFolder').onclick = async () => {
-  $('folderBrowser').hidden = false; $('cacheMessage').textContent = '';
+  $('folderBrowser').hidden = false;
   try { await loadFolders($('selectedFolder').dataset.path || ''); }
   catch(err) { try { await loadFolders(''); } catch(rootErr) { error(rootErr); $('folderBrowser').hidden = true; } }
 };
@@ -149,15 +144,6 @@ $('selectFolder').onclick = async () => {
     $('folderBrowser').hidden = true; clearTimeout(timer); await pollScan();
   } catch(err) { error(err); }
   finally { $('selectFolder').disabled = false; }
-};
-$('purgeThumbnails').onclick = async () => {
-  if (!window.confirm('Delete all generated thumbnails? Originals and full-size previews will not be touched.')) return;
-  $('purgeThumbnails').disabled = true; $('cacheMessage').textContent = 'Purging thumbnail cache…';
-  try {
-    const data = await api('/api/cache/thumbnails',{method:'DELETE'});
-    $('cacheMessage').textContent = `Removed ${nf.format(data.removed)} thumbnails (${formatBytes(data.bytes_removed)}). Run Index photos to regenerate them.`;
-  } catch(err) { $('cacheMessage').textContent = ''; error(err); }
-  finally { $('purgeThumbnails').disabled = false; }
 };
 $('closeViewer').onclick = () => $('viewer').close();
 $('viewer').addEventListener('close', () => { detailRevision++; if(document.fullscreenElement) document.exitFullscreen().catch(()=>{}); });
