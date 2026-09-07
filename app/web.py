@@ -22,6 +22,7 @@ from app.storage import (THUMB_FOLDER_KEY, PREVIEW_FOLDER_KEY, PREVIEW_EDGE_KEY,
 SELECTED_FOLDER_KEY = 'selected_photo_folder'
 SCAN_MODE_PREFIX = 'scan_mode:'
 SCAN_SKIP_PREVIEWS_PREFIX = 'scan_skip_previews:'
+SCAN_SKIP_IMPORTED_PREFIX = 'scan_skip_imported:'
 
 
 def configured_root():
@@ -136,6 +137,10 @@ def create_app():
     @app.get('/statistics')
     def statistics_page():
         return app.send_static_file('statistics.html')
+
+    @app.get('/indexer')
+    def indexer_page():
+        return app.send_static_file('indexer.html')
 
     @app.get('/health')
     def health():
@@ -530,7 +535,9 @@ def create_app():
             return None
         return {name: getattr(job, name) for name in ('id', 'state', 'discovered', 'indexed', 'skipped', 'errors', 'current_path', 'message', 'cancel')} | {'updated_at': job.updated_at.isoformat() + 'Z'}
 
-    def queue_job(mode='scan', force=False, skip_previews=False):
+    def queue_job(mode='scan', force=False, skip_previews=False, skip_imported=False):
+        if force and skip_imported:
+            abort(400, 'Force re-index and Skip already imported cannot be enabled together')
         with engine.connect() as connection:
             mysql = connection.dialect.name == 'mysql'
             if mysql and connection.scalar(text("SELECT GET_LOCK('raw_catalog_scan_queue', 5)")) != 1:
@@ -549,6 +556,8 @@ def create_app():
                         db.add(Setting(key=SCAN_MODE_PREFIX + str(job.id), value=mode))
                     if mode == 'scan' and skip_previews:
                         db.add(Setting(key=SCAN_SKIP_PREVIEWS_PREFIX + str(job.id), value='1'))
+                    if mode == 'scan' and skip_imported:
+                        db.add(Setting(key=SCAN_SKIP_IMPORTED_PREFIX + str(job.id), value='1'))
                     result = serialize_scan(job)
             finally:
                 if mysql:
@@ -582,7 +591,8 @@ def create_app():
     def start_scan():
         data = request.get_json(silent=True) or {}
         return jsonify(scan=queue_job('scan', force=data.get('force') is True,
-                                      skip_previews=data.get('skip_previews') is True)), 202
+                                      skip_previews=data.get('skip_previews') is True,
+                                      skip_imported=data.get('skip_imported') is True)), 202
 
     @app.post('/api/scan/cancel')
     def cancel_scan():

@@ -18,6 +18,7 @@ ROOT = Path(os.environ.get('PHOTO_ROOT', '/photos')).absolute()
 SELECTED_FOLDER_KEY = 'selected_photo_folder'
 SCAN_MODE_PREFIX = 'scan_mode:'
 SCAN_SKIP_PREVIEWS_PREFIX = 'scan_skip_previews:'
+SCAN_SKIP_IMPORTED_PREFIX = 'scan_skip_imported:'
 
 
 def digest(value):
@@ -101,6 +102,12 @@ def job_skip_previews(job_id):
         return bool(setting and setting.value == '1')
 
 
+def job_skip_imported(job_id):
+    with Session() as db:
+        setting = db.get(Setting, SCAN_SKIP_IMPORTED_PREFIX + str(job_id))
+        return bool(setting and setting.value == '1')
+
+
 def scan(job_id):
     counts = dict(discovered=0, indexed=0, skipped=0, errors=0)
     last_message = 'Scanning folders'
@@ -128,6 +135,7 @@ def scan(job_id):
         force = job.force
         job.state, job.updated_at = 'running', now()
     skip_previews = job_skip_previews(job_id)
+    skip_imported = job_skip_imported(job_id)
 
     try:
         thumbnail_cache = current_thumbnail_root()
@@ -141,9 +149,12 @@ def scan(job_id):
             with Session() as db:
                 existing = {p.path_hash: p for p in db.scalars(select(Photo).where(Photo.path_hash.in_(hashes)))}
             for path, path_hash in zip(paths, hashes):
+                old = existing.get(path_hash)
+                if old and skip_imported:
+                    counts['skipped'] += 1
+                    continue
                 try:
                     stat = path.stat()
-                    old = existing.get(path_hash)
                     preview_ok = skip_previews
                     thumb_ok = False
                     if old and old.cache_key:
@@ -211,7 +222,12 @@ def scan(job_id):
 
         root = selected_scan_root()
         pending = []
-        report(message='Scanning folders (previews on demand)' if skip_previews else 'Scanning folders')
+        notes = []
+        if skip_previews:
+            notes.append('previews on demand')
+        if skip_imported:
+            notes.append('already imported paths skipped')
+        report(message='Scanning folders' + (f" ({', '.join(notes)})" if notes else ''))
         for directory, directories, filenames in os.walk(root, followlinks=False, onerror=walk_error):
             directories[:] = [d for d in directories if not Path(directory, d).is_symlink()]
             report(directory)
@@ -226,7 +242,12 @@ def scan(job_id):
                     pending = []
         if pending:
             process(pending)
-        suffix = ' — previews will be generated when opened' if skip_previews else ''
+        completion = []
+        if skip_previews:
+            completion.append('previews will be generated when opened')
+        if skip_imported:
+            completion.append('existing source paths were skipped')
+        suffix = (' — ' + '; '.join(completion)) if completion else ''
         report(message=('Scan complete' if not counts['errors'] else 'Scan complete with errors; see worker logs') + suffix)
         state, message = 'done', last_message
     except InterruptedError as exc:
@@ -326,7 +347,8 @@ def job_mode(job_id):
 
 def clear_job_settings(job_id):
     with Session.begin() as db:
-        for key in (SCAN_MODE_PREFIX + str(job_id), SCAN_SKIP_PREVIEWS_PREFIX + str(job_id)):
+        for key in (SCAN_MODE_PREFIX + str(job_id), SCAN_SKIP_PREVIEWS_PREFIX + str(job_id),
+                    SCAN_SKIP_IMPORTED_PREFIX + str(job_id)):
             setting = db.get(Setting, key)
             if setting:
                 db.delete(setting)
