@@ -1,0 +1,34 @@
+name: Verify statistics drilldown
+on:
+  push:
+permissions:
+  contents: write
+jobs:
+  test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Python tests
+        run: python -m pytest -q
+      - name: JavaScript syntax
+        run: node --check app/static/statistics.js && node --check app/static/app.js
+      - name: Verify drilldown wiring
+        run: |
+          grep -q "includeCamera" app/static/statistics.js
+          grep -q "selectCamera(row.value)" app/static/statistics.js
+          grep -q "applyUrlFilters" app/static/app.js
+          grep -q "Open Library" app/static/statistics.html
+      - name: Remove temporary workflow
+        run: |
+          rm .github/workflows/verify-statistics-drilldown.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/verify-statistics-drilldown.yml
+          git commit -m 'Remove temporary statistics drilldown workflow'
+          git push
