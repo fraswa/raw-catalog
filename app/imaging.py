@@ -76,13 +76,13 @@ def _srgb(image):
     return image.convert('RGB')
 
 
-def _save_scaled(image, output, edge, quality):
+def _save_scaled(image, output, edge, quality, optimize=True):
     output.parent.mkdir(parents=True, exist_ok=True)
     scaled = image.copy()
     try:
         scaled.thumbnail((edge, edge), Image.Resampling.LANCZOS)
         temp = output.with_suffix('.tmp')
-        scaled.save(temp, 'JPEG', quality=quality, optimize=True)
+        scaled.save(temp, 'JPEG', quality=quality, optimize=optimize)
         temp.replace(output)
     finally:
         scaled.close()
@@ -93,7 +93,10 @@ def make_thumbnail(path, metadata, thumbnail_cache, key):
     try:
         converted = _srgb(image)
         try:
-            _save_scaled(converted, cache_file(thumbnail_cache, key, 'thumb'), 480, 80)
+            # JPEG optimization adds an extra CPU pass for very small files. It saves little
+            # space at 480 px, so favor indexing throughput for thumbnails.
+            _save_scaled(converted, cache_file(thumbnail_cache, key, 'thumb'), 480, 80,
+                         optimize=False)
         finally:
             if converted is not image:
                 converted.close()
@@ -108,7 +111,8 @@ def make_preview(path, metadata, preview_cache, key, edge=None, quality=88):
     try:
         converted = _srgb(image)
         try:
-            _save_scaled(converted, cache_file(preview_cache, key, 'preview'), edge, quality)
+            _save_scaled(converted, cache_file(preview_cache, key, 'preview'), edge, quality,
+                         optimize=True)
         finally:
             if converted is not image:
                 converted.close()
@@ -125,8 +129,10 @@ def make_previews(path, metadata, preview_cache, key, thumbnail_cache=None, prev
     try:
         converted = _srgb(image)
         try:
-            _save_scaled(converted, cache_file(preview_cache, key, 'preview'), edge, quality)
-            _save_scaled(converted, cache_file(thumbnail_cache, key, 'thumb'), 480, 80)
+            _save_scaled(converted, cache_file(preview_cache, key, 'preview'), edge, quality,
+                         optimize=True)
+            _save_scaled(converted, cache_file(thumbnail_cache, key, 'thumb'), 480, 80,
+                         optimize=False)
         finally:
             if converted is not image:
                 converted.close()
