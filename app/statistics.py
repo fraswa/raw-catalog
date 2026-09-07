@@ -52,73 +52,47 @@ def build_statistics(db, force=False):
         except (TypeError, ValueError):
             pass
 
-    cameras = Counter()
-    lenses = Counter()
-    focals = Counter()
-    apertures = Counter()
-    months = Counter()
-    camera_months = defaultdict(Counter)
-    lens_months = defaultdict(Counter)
-    dated = 0
-    total = 0
+    cameras = Counter(); lenses = Counter(); focals = Counter(); apertures = Counter(); months = Counter()
+    camera_months = defaultdict(Counter); lens_months = defaultdict(Counter)
+    dated = total = 0
 
     statement = select(Photo.camera, Photo.lens, Photo.taken_at, Photo.metadata_json).execution_options(yield_per=2000)
     for camera, lens, taken_at, metadata in db.execute(statement):
         total += 1
-        cameras[camera or 'Unknown camera'] += 1
-        lenses[lens or 'Unknown lens'] += 1
+        camera = camera or 'Unknown camera'; lens = lens or 'Unknown lens'
+        cameras[camera] += 1; lenses[lens] += 1
         metadata = metadata or {}
-        focal = _number_value(metadata.get('FocalLength'))
-        aperture = _number_value(metadata.get('FNumber'))
-        if focal is not None and focal > 0:
-            focals[_label_number(focal, 1) + ' mm'] += 1
-        if aperture is not None and aperture > 0:
-            apertures['f/' + _label_number(aperture, 1)] += 1
+        focal = _number_value(metadata.get('FocalLength')); aperture = _number_value(metadata.get('FNumber'))
+        if focal is not None and focal > 0: focals[_label_number(focal, 1) + ' mm'] += 1
+        if aperture is not None and aperture > 0: apertures['f/' + _label_number(aperture, 1)] += 1
         if taken_at:
             dated += 1
-            month = taken_at.strftime('%Y-%m')
-            months[month] += 1
-            camera_months[month][camera or 'Unknown camera'] += 1
-            lens_months[month][lens or 'Unknown lens'] += 1
+            month = taken_at.strftime('%Y-%m'); months[month] += 1
+            camera_months[month][camera] += 1; lens_months[month][lens] += 1
 
     month_keys = sorted(months)[-60:]
     top_cameras = [name for name, _ in cameras.most_common(5)]
     top_lenses = [name for name, _ in lenses.most_common(5)]
-    trend = []
-    for month in month_keys:
-        trend.append({
-            'month': month,
-            'total': months[month],
-            'cameras': {name: camera_months[month].get(name, 0) for name in top_cameras},
-            'lenses': {name: lens_months[month].get(name, 0) for name in top_lenses},
-        })
-
+    trend = [{'month': month, 'total': months[month],
+              'cameras': {name: camera_months[month].get(name, 0) for name in top_cameras},
+              'lenses': {name: lens_months[month].get(name, 0) for name in top_lenses}}
+             for month in month_keys]
     yearly = Counter()
-    for month, count in months.items():
-        yearly[month[:4]] += count
+    for month, count in months.items(): yearly[month[:4]] += count
 
     payload = {
-        'signature': signature,
-        'cached': False,
-        'generated_at': datetime.utcnow().isoformat() + 'Z',
-        'total_photos': total,
-        'dated_photos': dated,
-        'undated_photos': total - dated,
-        'cameras': _top(cameras),
-        'lenses': _top(lenses),
-        'focal_lengths': _top(focals),
-        'apertures': _top(apertures),
-        'top_camera_names': top_cameras,
-        'top_lens_names': top_lenses,
-        'trend': trend,
+        'signature': signature, 'cached': False, 'generated_at': datetime.utcnow().isoformat() + 'Z',
+        'total_photos': total, 'dated_photos': dated, 'undated_photos': total - dated,
+        'distinct_cameras': len(cameras), 'distinct_lenses': len(lenses),
+        'distinct_focal_lengths': len(focals), 'distinct_apertures': len(apertures),
+        'cameras': _top(cameras), 'lenses': _top(lenses), 'focal_lengths': _top(focals), 'apertures': _top(apertures),
+        'top_camera_names': top_cameras, 'top_lens_names': top_lenses, 'trend': trend,
         'yearly': [{'year': year, 'count': yearly[year]} for year in sorted(yearly)],
     }
 
     encoded = json.dumps(payload, separators=(',', ':'))
     setting = db.get(Setting, CACHE_KEY)
-    if setting is None:
-        db.add(Setting(key=CACHE_KEY, value=encoded))
-    else:
-        setting.value = encoded
+    if setting is None: db.add(Setting(key=CACHE_KEY, value=encoded))
+    else: setting.value = encoded
     db.flush()
     return payload
