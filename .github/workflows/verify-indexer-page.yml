@@ -46,7 +46,7 @@ jobs:
               p.write_text(s)
           PY
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt pytest
       - name: Run tests
         run: python -m pytest -q
       - name: Verify skip-imported code paths
