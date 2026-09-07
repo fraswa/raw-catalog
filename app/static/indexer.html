@@ -14,6 +14,7 @@
 </section>
 <section class="indexer-card">
 <div class="card-heading"><div><p class="eyebrow">OPTIONS</p><h2>Import behavior</h2></div></div>
+<label class="parallelism-row" for="parallelism"><span><strong>Parallel processing</strong><small>Concurrent RAW decode / generated-media workers. 4 is recommended for a 6-core CPU; reduce it if the server becomes unresponsive or storage is saturated.</small></span><select id="parallelism"><option value="1">1 worker</option><option value="2">2 workers</option><option value="4" selected>4 workers</option><option value="6">6 workers</option><option value="8">8 workers</option></select></label>
 <label class="option-row"><input id="skipPreviews" type="checkbox"><span><strong>Skip preview generation</strong><small>Create metadata and thumbnails only. A large preview is generated automatically the first time you open a photo.</small></span></label>
 <label class="option-row"><input id="skipImported" type="checkbox"><span><strong>Skip already imported photos</strong><small>Skip any photo whose exact source path is already in the catalog, even if the file changed or generated media is missing.</small></span></label>
 <label class="option-row"><input id="force" type="checkbox"><span><strong>Force re-index existing photos</strong><small>Re-read metadata and regenerate requested media even when an existing photo appears unchanged. Mutually exclusive with Skip already imported.</small></span></label>

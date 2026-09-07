@@ -23,6 +23,8 @@ SELECTED_FOLDER_KEY = 'selected_photo_folder'
 SCAN_MODE_PREFIX = 'scan_mode:'
 SCAN_SKIP_PREVIEWS_PREFIX = 'scan_skip_previews:'
 SCAN_SKIP_IMPORTED_PREFIX = 'scan_skip_imported:'
+SCAN_PARALLELISM_PREFIX = 'scan_parallelism:'
+PARALLELISM_VALUES = (1, 2, 4, 6, 8)
 
 
 def configured_root():
@@ -535,9 +537,15 @@ def create_app():
             return None
         return {name: getattr(job, name) for name in ('id', 'state', 'discovered', 'indexed', 'skipped', 'errors', 'current_path', 'message', 'cancel')} | {'updated_at': job.updated_at.isoformat() + 'Z'}
 
-    def queue_job(mode='scan', force=False, skip_previews=False, skip_imported=False):
+    def queue_job(mode='scan', force=False, skip_previews=False, skip_imported=False, parallelism=1):
         if force and skip_imported:
             abort(400, 'Force re-index and Skip already imported cannot be enabled together')
+        try:
+            parallelism = int(parallelism)
+        except (TypeError, ValueError):
+            abort(400, 'Parallel processing must be one of 1, 2, 4, 6 or 8')
+        if parallelism not in PARALLELISM_VALUES:
+            abort(400, 'Parallel processing must be one of 1, 2, 4, 6 or 8')
         with engine.connect() as connection:
             mysql = connection.dialect.name == 'mysql'
             if mysql and connection.scalar(text("SELECT GET_LOCK('raw_catalog_scan_queue', 5)")) != 1:
@@ -558,6 +566,8 @@ def create_app():
                         db.add(Setting(key=SCAN_SKIP_PREVIEWS_PREFIX + str(job.id), value='1'))
                     if mode == 'scan' and skip_imported:
                         db.add(Setting(key=SCAN_SKIP_IMPORTED_PREFIX + str(job.id), value='1'))
+                    if mode == 'scan':
+                        db.add(Setting(key=SCAN_PARALLELISM_PREFIX + str(job.id), value=str(parallelism)))
                     result = serialize_scan(job)
             finally:
                 if mysql:
@@ -592,7 +602,8 @@ def create_app():
         data = request.get_json(silent=True) or {}
         return jsonify(scan=queue_job('scan', force=data.get('force') is True,
                                       skip_previews=data.get('skip_previews') is True,
-                                      skip_imported=data.get('skip_imported') is True)), 202
+                                      skip_imported=data.get('skip_imported') is True,
+                                      parallelism=data.get('parallelism', 1))), 202
 
     @app.post('/api/scan/cancel')
     def cancel_scan():

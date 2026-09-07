@@ -19,7 +19,7 @@ function syncOptions(){
   if ($('force').checked) {$('skipImported').checked=false;$('skipImported').disabled=true;} else $('skipImported').disabled=false;
 }
 function setBusy(busy){
-  for(const id of ['browseFolder','skipPreviews','skipImported','force','startScan']) $(id).disabled=busy;
+  for(const id of ['browseFolder','parallelism','skipPreviews','skipImported','force','startScan']) $(id).disabled=busy;
   if(!busy) syncOptions();
 }
 async function loadFolders(path=''){
@@ -48,7 +48,7 @@ $('browseFolder').onclick=async()=>{$('folderBrowser').hidden=false;try{await lo
 $('closeFolderBrowser').onclick=()=>{$('folderBrowser').hidden=true;};
 $('folderUp').onclick=()=>loadFolders($('folderUp').dataset.path||'').catch(showError);
 $('selectFolder').onclick=async()=>{clearError();$('selectFolder').disabled=true;try{const data=await api('/api/folders/select',{method:'POST',body:JSON.stringify({path:browsePath})});$('selectedFolder').textContent=data.selected_display;$('selectedFolder').dataset.path=data.selected;$('folderBrowser').hidden=true;}catch(err){showError(err);}finally{$('selectFolder').disabled=false;}};
-$('startScan').onclick=async()=>{clearError();$('startScan').disabled=true;try{await api('/api/scan',{method:'POST',body:JSON.stringify({force:$('force').checked,skip_previews:$('skipPreviews').checked,skip_imported:$('skipImported').checked})});clearTimeout(timer);await poll();}catch(err){showError(err);$('startScan').disabled=false;}};
+$('startScan').onclick=async()=>{clearError();$('startScan').disabled=true;try{await api('/api/scan',{method:'POST',body:JSON.stringify({force:$('force').checked,skip_previews:$('skipPreviews').checked,skip_imported:$('skipImported').checked,parallelism:Number($('parallelism').value)})});clearTimeout(timer);await poll();}catch(err){showError(err);$('startScan').disabled=false;}};
 $('cancelScan').onclick=async()=>{clearError();try{await api('/api/scan/cancel',{method:'POST'});clearTimeout(timer);await poll();}catch(err){showError(err);}};
 $('signOut').onclick=async()=>{try{await api('/api/logout',{method:'POST'});}finally{location.href='/';}};
 (async()=>{try{const state=await api('/api/session');csrf=state.csrf;if(!state.authenticated){location.href='/';return;}authenticated=true;$('indexerApp').hidden=false;syncOptions();poll();}catch(err){showError(err);$('indexerApp').hidden=false;}})();

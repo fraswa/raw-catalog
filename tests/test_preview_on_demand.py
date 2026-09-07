@@ -1,5 +1,7 @@
 import os
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -164,3 +166,66 @@ def test_missing_preview_generated_once_on_open(client, tmp_path, monkeypatch):
 
     with Session() as db:
         assert db.get(Photo, photo_id).preview_error is None
+
+
+
+def test_parallelism_setting_validation(client):
+    headers = {'X-CSRF-Token': client.csrf}
+    queued = client.post('/api/scan', json={'parallelism': 4}, headers=headers)
+    assert queued.status_code == 202
+    job_id = queued.json['scan']['id']
+    with Session() as db:
+        assert db.get(Setting, f'scan_parallelism:{job_id}').value == '4'
+
+
+def test_parallel_scan_executes_generated_media_concurrently(tmp_path, monkeypatch):
+    photos = tmp_path / 'photos'
+    photos.mkdir()
+    for index in range(8):
+        (photos / f'{index}.cr3').write_bytes(b'raw-' + bytes([index]))
+    cache = tmp_path / 'cache'
+    external = tmp_path / 'storage'
+    external.mkdir()
+    monkeypatch.setenv('CACHE_DIR', str(cache))
+    monkeypatch.setenv('EXTERNAL_STORAGE_ROOT', str(external))
+    monkeypatch.setattr(worker, 'ROOT', photos)
+    monkeypatch.setattr(worker, 'CACHE', str(cache))
+    monkeypatch.setattr(worker, 'metadata_batch', lambda paths: {
+        str(path): {'Make': 'Canon', 'Model': 'EOS R6', 'LensModel': 'Test lens'} for path in paths
+    })
+
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+
+    def fake_thumbnail(path, metadata, root, key):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.04)
+            output = cache_file(root, key, 'thumb')
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b'thumb')
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(worker, 'make_thumbnail', fake_thumbnail)
+    with Session.begin() as db:
+        job = Scan()
+        db.add(job)
+        db.flush()
+        job_id = job.id
+        db.add(Setting(key=f'scan_skip_previews:{job_id}', value='1'))
+        db.add(Setting(key=f'scan_parallelism:{job_id}', value='4'))
+
+    worker.scan(job_id)
+    with Session() as db:
+        job = db.get(Scan, job_id)
+        assert job.state == 'done'
+        assert job.indexed == 8
+        assert job.errors == 0
+        assert db.query(Photo).count() == 8
+    assert peak >= 2

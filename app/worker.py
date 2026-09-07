@@ -3,6 +3,7 @@ import hashlib
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from sqlalchemy import select, update, func
@@ -19,6 +20,8 @@ SELECTED_FOLDER_KEY = 'selected_photo_folder'
 SCAN_MODE_PREFIX = 'scan_mode:'
 SCAN_SKIP_PREVIEWS_PREFIX = 'scan_skip_previews:'
 SCAN_SKIP_IMPORTED_PREFIX = 'scan_skip_imported:'
+SCAN_PARALLELISM_PREFIX = 'scan_parallelism:'
+PARALLELISM_VALUES = (1, 2, 4, 6, 8)
 
 
 def digest(value):
@@ -108,6 +111,16 @@ def job_skip_imported(job_id):
         return bool(setting and setting.value == '1')
 
 
+def job_parallelism(job_id):
+    with Session() as db:
+        setting = db.get(Setting, SCAN_PARALLELISM_PREFIX + str(job_id))
+    try:
+        value = int(setting.value) if setting else 1
+    except (TypeError, ValueError):
+        return 1
+    return value if value in PARALLELISM_VALUES else 1
+
+
 def scan(job_id):
     counts = dict(discovered=0, indexed=0, skipped=0, errors=0)
     last_message = 'Scanning folders'
@@ -136,6 +149,7 @@ def scan(job_id):
         job.state, job.updated_at = 'running', now()
     skip_previews = job_skip_previews(job_id)
     skip_imported = job_skip_imported(job_id)
+    parallelism = job_parallelism(job_id)
 
     try:
         thumbnail_cache = current_thumbnail_root()
@@ -143,7 +157,48 @@ def scan(job_id):
         preview_edge, preview_quality = current_preview_settings()
         legacy_cache = cache_root()
 
-        def process(paths):
+        def render_photo(item):
+            path, path_hash, stat, meta = item
+            if not meta or meta.get('Error'):
+                raise ValueError((meta or {}).get('Error', 'No metadata returned'))
+            camera, lens = labels(meta)
+            key = digest(f'{path_hash}:{stat.st_mtime_ns}:{stat.st_size}')
+            media_error = None
+            try:
+                if skip_previews:
+                    make_thumbnail(path, meta, thumbnail_cache, key)
+                else:
+                    make_previews(path, meta, preview_cache, key, thumbnail_cache,
+                                  preview_edge, preview_quality)
+            except Exception as exc:
+                media_error = str(exc)[:2000]
+                log.warning('Generated media failed for %s: %s', path, exc)
+            after = path.stat()
+            if (stat.st_size, stat.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                raise ValueError('File changed during indexing; retry next scan')
+            return dict(path=path, path_hash=path_hash, stat=stat, meta=meta, camera=camera,
+                        lens=lens, key=key, media_error=media_error)
+
+        def store_photo(result):
+            path = result['path']
+            stat = result['stat']
+            with Session.begin() as db:
+                photo = db.scalar(select(Photo).where(Photo.path_hash == result['path_hash']))
+                if photo is None:
+                    photo = Photo(path_hash=result['path_hash'])
+                    db.add(photo)
+                photo.path, photo.filename = str(path), path.name
+                photo.size, photo.mtime_ns = stat.st_size, stat.st_mtime_ns
+                photo.camera, photo.lens = result['camera'], result['lens']
+                photo.taken_at, photo.metadata_json = capture_date(result['meta']), result['meta']
+                photo.cache_key = result['key'] if not result['media_error'] else None
+                photo.preview_error = result['media_error']
+                photo.indexed_at = now()
+            counts['indexed'] += 1
+            if result['media_error']:
+                counts['errors'] += 1
+
+        def process(paths, executor):
             pending = []
             hashes = [digest(str(p)) for p in paths]
             with Session() as db:
@@ -179,45 +234,25 @@ def scan(job_id):
                 counts['errors'] += len(pending)
                 report(message=f'Metadata batch failed: {exc}')
                 return
+
+            futures = {}
             for path, path_hash, stat in pending:
-                report(path)
-                try:
-                    meta = metadata.get(str(path))
-                    if not meta or meta.get('Error'):
-                        raise ValueError((meta or {}).get('Error', 'No metadata returned'))
-                    camera, lens = labels(meta)
-                    key = digest(f'{path_hash}:{stat.st_mtime_ns}:{stat.st_size}')
-                    media_error = None
+                item = (path, path_hash, stat, metadata.get(str(path)))
+                futures[executor.submit(render_photo, item)] = path
+            try:
+                for future in as_completed(futures):
+                    path = futures[future]
+                    report(path)
                     try:
-                        if skip_previews:
-                            make_thumbnail(path, meta, thumbnail_cache, key)
-                        else:
-                            make_previews(path, meta, preview_cache, key, thumbnail_cache,
-                                          preview_edge, preview_quality)
+                        store_photo(future.result())
                     except Exception as exc:
-                        media_error = str(exc)[:2000]
                         counts['errors'] += 1
-                        log.warning('Generated media failed for %s: %s', path, exc)
-                    after = path.stat()
-                    if (stat.st_size, stat.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-                        raise ValueError('File changed during indexing; retry next scan')
-                    with Session.begin() as db:
-                        photo = db.scalar(select(Photo).where(Photo.path_hash == path_hash))
-                        if photo is None:
-                            photo = Photo(path_hash=path_hash)
-                            db.add(photo)
-                        photo.path, photo.filename = str(path), path.name
-                        photo.size, photo.mtime_ns = stat.st_size, stat.st_mtime_ns
-                        photo.camera, photo.lens = camera, lens
-                        photo.taken_at, photo.metadata_json = capture_date(meta), meta
-                        photo.cache_key = key if not media_error else None
-                        photo.preview_error = media_error
-                        photo.indexed_at = now()
-                    counts['indexed'] += 1
-                except Exception as exc:
-                    counts['errors'] += 1
-                    report(path, f'Could not index file: {exc}')
-                    log.exception('Could not index %s', path)
+                        report(path, f'Could not index file: {exc}')
+                        log.exception('Could not index %s', path)
+            except InterruptedError:
+                for future in futures:
+                    future.cancel()
+                raise
             report()
 
         root = selected_scan_root()
@@ -227,21 +262,23 @@ def scan(job_id):
             notes.append('previews on demand')
         if skip_imported:
             notes.append('already imported paths skipped')
+        notes.append(f'{parallelism} parallel worker' + ('s' if parallelism != 1 else ''))
         report(message='Scanning folders' + (f" ({', '.join(notes)})" if notes else ''))
-        for directory, directories, filenames in os.walk(root, followlinks=False, onerror=walk_error):
-            directories[:] = [d for d in directories if not Path(directory, d).is_symlink()]
-            report(directory)
-            for filename in filenames:
-                path = Path(directory, filename)
-                if path.suffix.lower() not in EXTENSIONS or path.is_symlink():
-                    continue
-                counts['discovered'] += 1
-                pending.append(path)
-                if len(pending) >= 64:
-                    process(pending)
-                    pending = []
-        if pending:
-            process(pending)
+        with ThreadPoolExecutor(max_workers=parallelism, thread_name_prefix='raw-index') as executor:
+            for directory, directories, filenames in os.walk(root, followlinks=False, onerror=walk_error):
+                directories[:] = [d for d in directories if not Path(directory, d).is_symlink()]
+                report(directory)
+                for filename in filenames:
+                    path = Path(directory, filename)
+                    if path.suffix.lower() not in EXTENSIONS or path.is_symlink():
+                        continue
+                    counts['discovered'] += 1
+                    pending.append(path)
+                    if len(pending) >= 64:
+                        process(pending, executor)
+                        pending = []
+            if pending:
+                process(pending, executor)
         completion = []
         if skip_previews:
             completion.append('previews will be generated when opened')
@@ -348,7 +385,7 @@ def job_mode(job_id):
 def clear_job_settings(job_id):
     with Session.begin() as db:
         for key in (SCAN_MODE_PREFIX + str(job_id), SCAN_SKIP_PREVIEWS_PREFIX + str(job_id),
-                    SCAN_SKIP_IMPORTED_PREFIX + str(job_id)):
+                    SCAN_SKIP_IMPORTED_PREFIX + str(job_id), SCAN_PARALLELISM_PREFIX + str(job_id)):
             setting = db.get(Setting, key)
             if setting:
                 db.delete(setting)
