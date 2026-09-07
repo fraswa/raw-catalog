@@ -4,11 +4,19 @@
 <body>
 <section id="login" class="login" hidden><form id="loginForm" class="login-card"><div class="mark">R / C</div><p class="eyebrow">YOUR PHOTO ARCHIVE</p><h1>RAW Catalog</h1><label for="password">Catalog password</label><input id="password" type="password" autocomplete="current-password" required><button class="primary" type="submit">Open catalog</button><p id="loginError" role="alert"></p></form></section>
 <div id="application" hidden>
-<header><div class="brand"><span class="mark">R / C</span><div><strong>RAW Catalog</strong><span>Photo archive</span></div></div><div class="header-actions"><button id="scanButton" class="primary">Index photos</button><a class="button-link" href="/settings">Settings</a><button id="signOut">Sign out</button></div></header>
+<header><div class="brand"><span class="mark">R / C</span><div><strong>RAW Catalog</strong><span>Photo archive</span></div></div><div class="header-actions"><button id="scanButton" class="primary">Index photos</button><a class="button-link" href="/statistics">Statistics</a><a class="button-link" href="/settings">Settings</a><button id="signOut">Sign out</button></div></header>
 <main>
 <div class="title-row"><div><p class="eyebrow">LIBRARY</p><h1>All photographs<span id="count">—</span></h1></div><span class="read-only">Originals are read-only</span></div>
-<form id="filters" class="filters"><div><label for="camera">Camera</label><select id="camera"><option value="">All cameras</option></select></div><div><label for="lens">Lens</label><select id="lens"><option value="">All lenses</option></select></div><div class="search"><label for="query">Filename or folder</label><input id="query" type="search" placeholder="Search your archive…"></div><button type="button" id="reset">Clear filters</button></form>
-<div class="results-bar"><p id="summary" aria-live="polite">Loading photographs…</p><span>Newest indexed first</span></div>
+<form id="filters" class="filters archive-filters">
+<div><label for="camera">Camera</label><select id="camera"><option value="">All cameras</option></select></div>
+<div><label for="lens">Lens</label><select id="lens"><option value="">All lenses</option></select></div>
+<div class="search"><label for="query">Filename or folder</label><input id="query" type="search" placeholder="Search your archive…"></div>
+<div><label for="dateFrom">Captured from</label><input id="dateFrom" type="date"></div>
+<div><label for="dateTo">Captured to</label><input id="dateTo" type="date"></div>
+<div><label for="sort">Sort</label><select id="sort"><option value="indexed_desc">Newest indexed</option><option value="date_desc">Capture date — newest</option><option value="date_asc">Capture date — oldest</option></select></div>
+<button type="button" id="reset">Clear filters</button>
+</form>
+<div class="results-bar"><p id="summary" aria-live="polite">Loading photographs…</p><span id="sortSummary">Newest indexed first</span></div>
 <div id="error" class="error" role="alert" hidden></div>
 <section id="grid" class="grid" aria-label="Matching photographs"></section>
 <div id="empty" class="empty" hidden><span class="empty-icon">[ &nbsp; ]</span><h2 id="emptyTitle">Your archive starts here</h2><p id="emptyText">Index your photo folder to browse cameras, lenses and photographs.</p></div>
@@ -17,9 +25,9 @@
 <p id="scanMessage">Run a scan to add new or changed photographs.</p><p id="scanCounts"></p><p id="scanPath" class="path"></p>
 <div class="folder-control"><div><span class="control-label">Photo folder</span><strong id="selectedFolder">/photos</strong></div><button id="browseFolder">Browse folders</button></div>
 <div id="folderBrowser" class="folder-browser" hidden><div class="folder-toolbar"><button id="folderUp">Up</button><strong id="folderCurrent">/photos</strong><button id="closeFolderBrowser">Close</button></div><div id="folderList" class="folder-list"></div><div class="folder-select-row"><button id="selectFolder" class="primary">Use this folder</button></div></div>
-<div class="scan-actions"><label class="check"><input id="force" type="checkbox"> Rebuild metadata and previews for every photo</label><button id="cancelScan" hidden>Cancel scan</button></div>
+<div class="scan-actions"><label class="check"><input id="force" type="checkbox"> Rebuild metadata and generated media for every photo</label><button id="cancelScan" hidden>Cancel scan</button></div>
 </div></details>
-</main><footer>RAW Catalog <span>Camera + lens filters match together</span></footer>
+</main><footer>RAW Catalog <span>Camera, lens, text and capture-date filters combine</span></footer>
 </div>
 <dialog id="viewer" aria-labelledby="viewerTitle"><div class="viewer-layout"><div class="viewer-top"><div><strong id="viewerTitle"></strong><span id="viewerPosition"></span></div><div><button id="fullScreen" title="Enter full screen">Full screen</button><button id="closeViewer" aria-label="Close preview">Close ×</button></div></div><div class="stage"><button id="previous" class="nav prev" aria-label="Previous photo">‹</button><img id="previewImage" alt=""><p id="previewMessage" hidden></p><button id="next" class="nav next" aria-label="Next photo">›</button></div><div class="viewer-bottom"><div><strong id="viewerCamera"></strong><span id="viewerLens"></span></div><p id="exposure"></p><details><summary>File details</summary><p id="viewerPath" class="path"></p><pre id="metadata"></pre></details></div></div></dialog>
 </body></html>
