@@ -5,8 +5,55 @@ from pathlib import Path
 from flask import Flask, request, jsonify, session, send_file, abort
 from sqlalchemy import select, func, or_, text
 from werkzeug.exceptions import HTTPException
-from app.db import Session, Photo, Scan, engine, init_db
+from app.db import Session, Photo, Scan, Setting, engine, init_db
 from app.imaging import cache_file
+
+
+SELECTED_FOLDER_KEY = 'selected_photo_folder'
+
+
+def configured_root():
+    return Path(os.environ.get('PHOTO_ROOT', '/photos'))
+
+
+def selected_relative(db):
+    setting = db.get(Setting, SELECTED_FOLDER_KEY)
+    return setting.value if setting else ''
+
+
+def display_root(relative):
+    return '/photos' + (f'/{relative}' if relative else '')
+
+
+def resolve_folder(relative):
+    if not isinstance(relative, str) or len(relative) > 4096:
+        abort(400, 'Invalid folder path')
+    requested = Path(relative)
+    if requested.is_absolute() or '..' in requested.parts:
+        abort(400, 'Folder must be inside the configured photo root')
+    try:
+        base = configured_root().resolve(strict=True)
+    except OSError:
+        abort(503, 'Configured photo root is unavailable')
+    current = base
+    clean_parts = []
+    for part in requested.parts:
+        if part in ('', '.'):
+            continue
+        candidate = current / part
+        if candidate.is_symlink():
+            abort(400, 'Symbolic links cannot be selected')
+        current = candidate
+        clean_parts.append(part)
+    try:
+        target = current.resolve(strict=True)
+    except OSError:
+        abort(404, 'Folder not found')
+    if target != base and base not in target.parents:
+        abort(400, 'Folder must be inside the configured photo root')
+    if not target.is_dir():
+        abort(400, 'Selection is not a folder')
+    return target, Path(*clean_parts).as_posix() if clean_parts else ''
 
 
 def create_app():
@@ -143,6 +190,75 @@ def create_app():
                 abort(404, 'Preview missing; run a scan to regenerate it')
             return send_file(path, mimetype='image/jpeg', conditional=True)
 
+    def active_scan(db):
+        return db.scalar(select(Scan).where(Scan.state.in_(['queued', 'running'])).order_by(Scan.id).limit(1))
+
+    @app.get('/api/folders')
+    def folders():
+        target, relative = resolve_folder(request.args.get('path', ''))
+        directories = []
+        try:
+            entries = sorted(target.iterdir(), key=lambda p: p.name.casefold())
+        except OSError as exc:
+            abort(403, f'Folder could not be read: {exc}')
+        for entry in entries:
+            try:
+                if entry.is_dir() and not entry.is_symlink():
+                    child = (Path(relative) / entry.name).as_posix() if relative else entry.name
+                    directories.append(dict(name=entry.name, path=child))
+            except OSError:
+                continue
+        parent = None
+        if relative:
+            parent_path = Path(relative).parent
+            parent = '' if str(parent_path) == '.' else parent_path.as_posix()
+        with Session() as db:
+            selected = selected_relative(db)
+        return jsonify(current=relative, current_display=display_root(relative), parent=parent,
+                       selected=selected, selected_display=display_root(selected), directories=directories)
+
+    @app.post('/api/folders/select')
+    def select_folder():
+        data = request.get_json(silent=True) or {}
+        _, relative = resolve_folder(data.get('path', ''))
+        with Session.begin() as db:
+            if active_scan(db):
+                abort(409, 'Cannot change the photo folder while a scan is active')
+            setting = db.get(Setting, SELECTED_FOLDER_KEY)
+            if setting is None:
+                setting = Setting(key=SELECTED_FOLDER_KEY, value=relative)
+                db.add(setting)
+            else:
+                setting.value = relative
+        return jsonify(selected=relative, selected_display=display_root(relative))
+
+    @app.delete('/api/cache/thumbnails')
+    def purge_thumbnails():
+        with Session() as db:
+            if active_scan(db):
+                abort(409, 'Cannot purge thumbnails while a scan is active')
+        cache = Path(os.environ.get('CACHE_DIR', '/data/cache'))
+        removed = 0
+        bytes_removed = 0
+        if cache.is_dir():
+            for path in cache.rglob('*-thumb.jpg'):
+                try:
+                    if path.is_file() and not path.is_symlink():
+                        bytes_removed += path.stat().st_size
+                        path.unlink()
+                        removed += 1
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    abort(500, f'Could not purge thumbnail cache: {exc}')
+            for directory in sorted((p for p in cache.rglob('*') if p.is_dir()),
+                                    key=lambda p: len(p.parts), reverse=True):
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass
+        return jsonify(ok=True, removed=removed, bytes_removed=bytes_removed)
+
     def serialize_scan(job):
         if not job:
             return None
@@ -151,9 +267,10 @@ def create_app():
     @app.get('/api/scan')
     def scan_status():
         with Session() as db:
-            active = db.scalar(select(Scan).where(Scan.state.in_(['queued', 'running'])).order_by(Scan.id).limit(1))
+            active = active_scan(db)
             job = active or db.scalar(select(Scan).order_by(Scan.id.desc()).limit(1))
-            return jsonify(scan=serialize_scan(job), root=os.environ.get('PHOTO_ROOT', '/photos'))
+            selected = selected_relative(db)
+            return jsonify(scan=serialize_scan(job), root=display_root(selected), selected=selected)
 
     @app.post('/api/scan')
     def start_scan():
