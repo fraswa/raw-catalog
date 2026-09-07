@@ -1,17 +1,19 @@
 import hmac
 import os
 import secrets
+from datetime import datetime, timedelta
 from pathlib import Path
 from flask import Flask, request, jsonify, session, send_file, abort
 from sqlalchemy import select, func, or_, text
 from werkzeug.exceptions import HTTPException
 from app.db import Session, Photo, Scan, Setting, engine
 from app.imaging import cache_file
-from app.storage import (THUMB_FOLDER_KEY, PREVIEW_FOLDER_KEY, cache_root,
-                         configured_thumbnail_folder, configured_preview_folder,
+from app.statistics import build_statistics
+from app.storage import (THUMB_FOLDER_KEY, PREVIEW_FOLDER_KEY, PREVIEW_EDGE_KEY, PREVIEW_EDGES,
+                         cache_root, external_storage_root, configured_thumbnail_folder,
+                         configured_preview_folder, configured_preview_edge,
                          normalize_thumbnail_folder, normalize_preview_folder,
-                         resolve_thumbnail_root, resolve_preview_root)
-
+                         normalize_preview_edge, resolve_thumbnail_root, resolve_preview_root)
 
 SELECTED_FOLDER_KEY = 'selected_photo_folder'
 SCAN_MODE_PREFIX = 'scan_mode:'
@@ -110,6 +112,10 @@ def create_app():
     def settings_page():
         return app.send_static_file('settings.html')
 
+    @app.get('/statistics')
+    def statistics_page():
+        return app.send_static_file('statistics.html')
+
     @app.get('/health')
     def health():
         with Session() as db:
@@ -137,6 +143,15 @@ def create_app():
         session.clear()
         return jsonify(ok=True)
 
+    def date_arg(name):
+        value = request.args.get(name, '').strip()
+        if not value:
+            return None
+        try:
+            return datetime.strptime(value, '%Y-%m-%d')
+        except ValueError:
+            abort(400, f'Invalid {name}; expected YYYY-MM-DD')
+
     def filters(exclude=None):
         clauses = []
         for name in ('camera', 'lens'):
@@ -146,6 +161,14 @@ def create_app():
         q = request.args.get('q', '').strip()[:200]
         if q:
             clauses.append(or_(Photo.filename.contains(q, autoescape=True), Photo.path.contains(q, autoescape=True)))
+        start = date_arg('date_from')
+        end = date_arg('date_to')
+        if start:
+            clauses.append(Photo.taken_at >= start)
+        if end:
+            clauses.append(Photo.taken_at < end + timedelta(days=1))
+        if start and end and start > end:
+            abort(400, 'Start date must not be after end date')
         return clauses
 
     @app.get('/api/facets')
@@ -161,21 +184,27 @@ def create_app():
     @app.get('/api/photos')
     def photos():
         try:
-            after = max(0, int(request.args.get('after', 0)))
+            offset = max(0, int(request.args.get('after', 0)))
             limit = min(120, max(1, int(request.args.get('limit', 60))))
         except ValueError:
             abort(400, 'Invalid pagination')
+        sort = request.args.get('sort', 'indexed_desc')
+        orders = {
+            'indexed_desc': (Photo.id.desc(),),
+            'date_desc': (Photo.taken_at.is_(None), Photo.taken_at.desc(), Photo.id.desc()),
+            'date_asc': (Photo.taken_at.is_(None), Photo.taken_at.asc(), Photo.id.asc()),
+        }
+        if sort not in orders:
+            abort(400, 'Invalid sort order')
         with Session() as db:
             clauses = filters()
             total = db.scalar(select(func.count()).select_from(Photo).where(*clauses))
-            query = select(Photo).where(*clauses)
-            if after:
-                query = query.where(Photo.id < after)
-            rows = list(db.scalars(query.order_by(Photo.id.desc()).limit(limit + 1)))
+            query = select(Photo).where(*clauses).order_by(*orders[sort]).offset(offset).limit(limit + 1)
+            rows = list(db.scalars(query))
             more = len(rows) > limit
             rows = rows[:limit]
             return jsonify(total=total, items=[serialize_photo(p) for p in rows],
-                           next_cursor=rows[-1].id if more else None)
+                           next_cursor=(offset + limit) if more else None, sort=sort)
 
     @app.get('/api/photos/<int:photo_id>')
     def detail(photo_id):
@@ -194,22 +223,23 @@ def create_app():
             p = db.get(Photo, photo_id)
             if not p or not p.cache_key:
                 abort(404, 'Preview unavailable')
+            path = None
             try:
                 if kind == 'thumb':
                     root = resolve_thumbnail_root(configured_thumbnail_folder(db), create=False)
-                    path = cache_file(root, p.cache_key, 'thumb')
-                    if not path.is_file():
-                        legacy = cache_file(cache_root(), p.cache_key, 'thumb')
-                        path = legacy if legacy.is_file() else path
+                    candidate = cache_file(root, p.cache_key, 'thumb')
                 else:
                     root = resolve_preview_root(configured_preview_folder(db), create=False)
-                    path = cache_file(root, p.cache_key, 'preview')
-                    if not path.is_file():
-                        legacy = cache_file(cache_root(), p.cache_key, 'preview')
-                        path = legacy if legacy.is_file() else path
+                    candidate = cache_file(root, p.cache_key, 'preview')
+                if candidate.is_file():
+                    path = candidate
             except (ValueError, RuntimeError):
-                abort(500, f'{kind.capitalize()} folder is unavailable')
-            if not path.is_file():
+                pass
+            if path is None:
+                legacy = cache_file(cache_root(), p.cache_key, kind)
+                if legacy.is_file():
+                    path = legacy
+            if path is None:
                 abort(404, 'Generated image missing; run the appropriate rebuild from Settings')
             return send_file(path, mimetype='image/jpeg', conditional=True)
 
@@ -255,7 +285,7 @@ def create_app():
                 setting.value = relative
         return jsonify(selected=relative, selected_display=display_root(relative))
 
-    def generated_stats(db, kind, relative, root, baseline):
+    def generated_stats(db, kind, root, baseline):
         files = 0
         size = 0
         suffix = f'-{kind}.jpg'
@@ -274,46 +304,51 @@ def create_app():
                         continue
         eligible = db.scalar(select(func.count()).select_from(Photo).where(Photo.cache_key.is_not(None))) or 0
         average = (size / files) if files else baseline
-        return dict(folder=relative, path=str(root), files=files, bytes=size,
-                    eligible_photos=eligible, estimated_bytes=int(average * eligible),
-                    estimated_per_file=int(average),
+        return dict(path=str(root), files=files, bytes=size, eligible_photos=eligible,
+                    estimated_bytes=int(average * eligible), estimated_per_file=int(average),
                     estimate_basis='current average' if files else 'baseline estimate')
 
     def thumbnail_stats(db):
-        relative = configured_thumbnail_folder(db)
+        value = configured_thumbnail_folder(db)
         try:
-            root = resolve_thumbnail_root(relative, create=False)
+            root = resolve_thumbnail_root(value, create=False)
         except (ValueError, RuntimeError) as exc:
             abort(500, f'Thumbnail folder is unavailable: {exc}')
-        result = generated_stats(db, 'thumb', relative, root, 60 * 1024)
-        result['estimated_per_thumbnail'] = result.pop('estimated_per_file')
+        result = generated_stats(db, 'thumb', root, 60 * 1024)
+        result.update(folder=value, estimated_per_thumbnail=result.pop('estimated_per_file'))
         if not result['files']:
             result['estimate_basis'] = '60 KB baseline'
         return result
 
     def preview_stats(db):
-        relative = configured_preview_folder(db)
+        value = configured_preview_folder(db)
+        edge = configured_preview_edge(db)
         try:
-            root = resolve_preview_root(relative, create=False)
+            root = resolve_preview_root(value, create=False)
         except (ValueError, RuntimeError) as exc:
             abort(500, f'Preview folder is unavailable: {exc}')
-        result = generated_stats(db, 'preview', relative, root, int(1.5 * 1024 * 1024))
-        result['estimated_per_preview'] = result.pop('estimated_per_file')
+        baseline = int(1.5 * 1024 * 1024 * (edge / 2560) ** 2)
+        result = generated_stats(db, 'preview', root, baseline)
+        result.update(folder=value, preview_edge=edge, estimated_per_preview=result.pop('estimated_per_file'))
         if not result['files']:
-            result['estimate_basis'] = '1.5 MB baseline'
+            result['estimate_basis'] = f'{edge}px baseline estimate'
         return result
+
+    def storage_info():
+        return dict(cache_root=str(cache_root()), external_root=str(external_storage_root()),
+                    allowed_roots=[str(cache_root()), str(external_storage_root())])
 
     @app.get('/api/settings/thumbnails')
     def thumbnail_settings():
         with Session() as db:
-            return jsonify(**thumbnail_stats(db), cache_root=str(cache_root()), active=bool(active_scan(db)))
+            return jsonify(**thumbnail_stats(db), **storage_info(), active=bool(active_scan(db)))
 
     @app.put('/api/settings/thumbnails')
     def update_thumbnail_settings():
         data = request.get_json(silent=True) or {}
         try:
-            relative = normalize_thumbnail_folder(data.get('folder'))
-            resolve_thumbnail_root(relative, create=True)
+            value = normalize_thumbnail_folder(data.get('folder'))
+            resolve_thumbnail_root(value, create=True)
         except ValueError as exc:
             abort(400, str(exc))
         except RuntimeError as exc:
@@ -323,70 +358,85 @@ def create_app():
                 abort(409, 'Cannot change the thumbnail folder while a scan is active')
             setting = db.get(Setting, THUMB_FOLDER_KEY)
             if setting is None:
-                db.add(Setting(key=THUMB_FOLDER_KEY, value=relative))
+                db.add(Setting(key=THUMB_FOLDER_KEY, value=value))
             else:
-                setting.value = relative
+                setting.value = value
         with Session() as db:
-            return jsonify(**thumbnail_stats(db), cache_root=str(cache_root()), active=False)
+            return jsonify(**thumbnail_stats(db), **storage_info(), active=False)
 
     @app.get('/api/settings/previews')
     def preview_settings():
         with Session() as db:
-            return jsonify(**preview_stats(db), cache_root=str(cache_root()),
-                           preview_edge=int(os.environ.get('PREVIEW_EDGE', '2560')),
+            return jsonify(**preview_stats(db), **storage_info(), preview_edge_options=PREVIEW_EDGES,
                            active=bool(active_scan(db)))
 
     @app.put('/api/settings/previews')
     def update_preview_settings():
         data = request.get_json(silent=True) or {}
+        with Session() as db:
+            current_folder = configured_preview_folder(db)
+            current_edge = configured_preview_edge(db)
         try:
-            relative = normalize_preview_folder(data.get('folder'))
-            resolve_preview_root(relative, create=True)
+            value = normalize_preview_folder(data.get('folder', current_folder))
+            edge = normalize_preview_edge(data.get('preview_edge', current_edge))
+            resolve_preview_root(value, create=True)
         except ValueError as exc:
             abort(400, str(exc))
         except RuntimeError as exc:
             abort(503, str(exc))
         with Session.begin() as db:
             if active_scan(db):
-                abort(409, 'Cannot change the preview folder while a scan is active')
-            setting = db.get(Setting, PREVIEW_FOLDER_KEY)
-            if setting is None:
-                db.add(Setting(key=PREVIEW_FOLDER_KEY, value=relative))
-            else:
-                setting.value = relative
+                abort(409, 'Cannot change preview settings while a scan is active')
+            for key, setting_value in ((PREVIEW_FOLDER_KEY, value), (PREVIEW_EDGE_KEY, str(edge))):
+                setting = db.get(Setting, key)
+                if setting is None:
+                    db.add(Setting(key=key, value=setting_value))
+                else:
+                    setting.value = setting_value
         with Session() as db:
-            return jsonify(**preview_stats(db), cache_root=str(cache_root()),
-                           preview_edge=int(os.environ.get('PREVIEW_EDGE', '2560')), active=False)
+            return jsonify(**preview_stats(db), **storage_info(), preview_edge_options=PREVIEW_EDGES, active=False)
 
-    def purge_generated(kind):
-        cache = cache_root()
+    def purge_tree(root, kind):
         removed = 0
         bytes_removed = 0
         suffix = f'-{kind}.jpg'
-        if cache.is_dir() and not cache.is_symlink():
-            for directory, directories, filenames in os.walk(cache, topdown=True, followlinks=False):
-                directories[:] = [d for d in directories if not Path(directory, d).is_symlink()]
-                for filename in filenames:
-                    if not filename.endswith(suffix):
-                        continue
-                    path = Path(directory, filename)
-                    try:
-                        if path.is_file() and not path.is_symlink():
-                            bytes_removed += path.stat().st_size
-                            path.unlink()
-                            removed += 1
-                    except FileNotFoundError:
-                        continue
-                    except OSError as exc:
-                        abort(500, f'Could not purge generated cache: {exc}')
-            for directory, directories, filenames in os.walk(cache, topdown=False, followlinks=False):
-                path = Path(directory)
-                if path == cache:
+        if not root.is_dir() or root.is_symlink():
+            return removed, bytes_removed
+        for directory, directories, filenames in os.walk(root, topdown=True, followlinks=False):
+            directories[:] = [d for d in directories if not Path(directory, d).is_symlink()]
+            for filename in filenames:
+                if not filename.endswith(suffix):
                     continue
+                path = Path(directory, filename)
                 try:
-                    path.rmdir()
-                except OSError:
-                    pass
+                    if path.is_file() and not path.is_symlink():
+                        bytes_removed += path.stat().st_size
+                        path.unlink()
+                        removed += 1
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    abort(500, f'Could not purge generated cache: {exc}')
+        for directory, _, _ in os.walk(root, topdown=False, followlinks=False):
+            path = Path(directory)
+            if path == root:
+                continue
+            try:
+                path.rmdir()
+            except OSError:
+                pass
+        return removed, bytes_removed
+
+    def purge_generated(kind, current_root):
+        roots = [current_root]
+        legacy = cache_root()
+        if legacy != current_root and not str(current_root).startswith(str(legacy) + os.sep):
+            roots.append(legacy)
+        removed = bytes_removed = 0
+        for root in roots:
+            count, size = purge_tree(root, kind)
+            removed += count
+            bytes_removed += size
         return removed, bytes_removed
 
     @app.delete('/api/cache/thumbnails')
@@ -394,7 +444,11 @@ def create_app():
         with Session() as db:
             if active_scan(db):
                 abort(409, 'Cannot purge thumbnails while a scan is active')
-        removed, bytes_removed = purge_generated('thumb')
+            try:
+                root = resolve_thumbnail_root(configured_thumbnail_folder(db), create=False)
+            except (ValueError, RuntimeError) as exc:
+                abort(503, str(exc))
+        removed, bytes_removed = purge_generated('thumb', root)
         return jsonify(ok=True, removed=removed, bytes_removed=bytes_removed)
 
     @app.delete('/api/cache/previews')
@@ -402,7 +456,11 @@ def create_app():
         with Session() as db:
             if active_scan(db):
                 abort(409, 'Cannot purge previews while a scan is active')
-        removed, bytes_removed = purge_generated('preview')
+            try:
+                root = resolve_preview_root(configured_preview_folder(db), create=False)
+            except (ValueError, RuntimeError) as exc:
+                abort(503, str(exc))
+        removed, bytes_removed = purge_generated('preview', root)
         return jsonify(ok=True, removed=removed, bytes_removed=bytes_removed)
 
     def serialize_scan(job):
@@ -435,13 +493,17 @@ def create_app():
 
     @app.post('/api/cache/thumbnails/rebuild')
     def rebuild_thumbnail_cache():
-        result = queue_job('thumbnails')
-        return jsonify(scan=result), 202
+        return jsonify(scan=queue_job('thumbnails')), 202
 
     @app.post('/api/cache/previews/rebuild')
     def rebuild_preview_cache():
-        result = queue_job('previews')
-        return jsonify(scan=result), 202
+        return jsonify(scan=queue_job('previews')), 202
+
+    @app.get('/api/statistics')
+    def statistics():
+        force = request.args.get('refresh') == '1'
+        with Session.begin() as db:
+            return jsonify(build_statistics(db, force=force))
 
     @app.get('/api/scan')
     def scan_status():
@@ -454,8 +516,7 @@ def create_app():
     @app.post('/api/scan')
     def start_scan():
         data = request.get_json(silent=True) or {}
-        result = queue_job('scan', force=data.get('force') is True)
-        return jsonify(scan=result), 202
+        return jsonify(scan=queue_job('scan', force=data.get('force') is True)), 202
 
     @app.post('/api/scan/cancel')
     def cancel_scan():
