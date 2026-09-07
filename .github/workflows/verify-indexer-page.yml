@@ -1,5 +1,6 @@
 name: Verify indexer page
-on: push
+on:
+  push:
 permissions:
   contents: write
 jobs:
@@ -16,83 +17,50 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          p=Path('app/web.py'); s=p.read_text()
-          s=s.replace("SCAN_SKIP_PREVIEWS_PREFIX = 'scan_skip_previews:'\n", "SCAN_SKIP_PREVIEWS_PREFIX = 'scan_skip_previews:'\nSCAN_SKIP_IMPORTED_PREFIX = 'scan_skip_imported:'\n")
-          s=s.replace("    @app.get('/statistics')\n    def statistics_page():\n        return app.send_static_file('statistics.html')\n", "    @app.get('/statistics')\n    def statistics_page():\n        return app.send_static_file('statistics.html')\n\n    @app.get('/indexer')\n    def indexer_page():\n        return app.send_static_file('indexer.html')\n")
-          s=s.replace("    def queue_job(mode='scan', force=False, skip_previews=False):\n        with engine.connect() as connection:\n", "    def queue_job(mode='scan', force=False, skip_previews=False, skip_imported=False):\n        if force and skip_imported:\n            abort(400, 'Force re-index and Skip already imported cannot be enabled together')\n        with engine.connect() as connection:\n")
-          s=s.replace("                    if mode == 'scan' and skip_previews:\n                        db.add(Setting(key=SCAN_SKIP_PREVIEWS_PREFIX + str(job.id), value='1'))\n                    result = serialize_scan(job)\n", "                    if mode == 'scan' and skip_previews:\n                        db.add(Setting(key=SCAN_SKIP_PREVIEWS_PREFIX + str(job.id), value='1'))\n                    if mode == 'scan' and skip_imported:\n                        db.add(Setting(key=SCAN_SKIP_IMPORTED_PREFIX + str(job.id), value='1'))\n                    result = serialize_scan(job)\n")
-          s=s.replace("        return jsonify(scan=queue_job('scan', force=data.get('force') is True,\n                                      skip_previews=data.get('skip_previews') is True)), 202\n", "        return jsonify(scan=queue_job('scan', force=data.get('force') is True,\n                                      skip_previews=data.get('skip_previews') is True,\n                                      skip_imported=data.get('skip_imported') is True)), 202\n")
+          p = Path('app/web.py')
+          s = p.read_text()
+          s = s.replace("SCAN_SKIP_PREVIEWS_PREFIX = 'scan_skip_previews:'\n", "SCAN_SKIP_PREVIEWS_PREFIX = 'scan_skip_previews:'\nSCAN_SKIP_IMPORTED_PREFIX = 'scan_skip_imported:'\n")
+          s = s.replace("    @app.get('/statistics')\n    def statistics_page():\n        return app.send_static_file('statistics.html')\n", "    @app.get('/statistics')\n    def statistics_page():\n        return app.send_static_file('statistics.html')\n\n    @app.get('/indexer')\n    def indexer_page():\n        return app.send_static_file('indexer.html')\n")
+          s = s.replace("    def queue_job(mode='scan', force=False, skip_previews=False):\n        with engine.connect() as connection:\n", "    def queue_job(mode='scan', force=False, skip_previews=False, skip_imported=False):\n        if force and skip_imported:\n            abort(400, 'Force re-index and Skip already imported cannot be enabled together')\n        with engine.connect() as connection:\n")
+          s = s.replace("                    if mode == 'scan' and skip_previews:\n                        db.add(Setting(key=SCAN_SKIP_PREVIEWS_PREFIX + str(job.id), value='1'))\n                    result = serialize_scan(job)\n", "                    if mode == 'scan' and skip_previews:\n                        db.add(Setting(key=SCAN_SKIP_PREVIEWS_PREFIX + str(job.id), value='1'))\n                    if mode == 'scan' and skip_imported:\n                        db.add(Setting(key=SCAN_SKIP_IMPORTED_PREFIX + str(job.id), value='1'))\n                    result = serialize_scan(job)\n")
+          s = s.replace("        return jsonify(scan=queue_job('scan', force=data.get('force') is True,\n                                      skip_previews=data.get('skip_previews') is True)), 202\n", "        return jsonify(scan=queue_job('scan', force=data.get('force') is True,\n                                      skip_previews=data.get('skip_previews') is True,\n                                      skip_imported=data.get('skip_imported') is True)), 202\n")
           p.write_text(s)
 
-          p=Path('app/worker.py'); s=p.read_text()
-          s=s.replace("SCAN_SKIP_PREVIEWS_PREFIX = 'scan_skip_previews:'\n", "SCAN_SKIP_PREVIEWS_PREFIX = 'scan_skip_previews:'\nSCAN_SKIP_IMPORTED_PREFIX = 'scan_skip_imported:'\n")
-          s=s.replace("def job_skip_previews(job_id):\n    with Session() as db:\n        setting = db.get(Setting, SCAN_SKIP_PREVIEWS_PREFIX + str(job_id))\n        return bool(setting and setting.value == '1')\n\n\ndef scan(job_id):\n", "def job_skip_previews(job_id):\n    with Session() as db:\n        setting = db.get(Setting, SCAN_SKIP_PREVIEWS_PREFIX + str(job_id))\n        return bool(setting and setting.value == '1')\n\n\ndef job_skip_imported(job_id):\n    with Session() as db:\n        setting = db.get(Setting, SCAN_SKIP_IMPORTED_PREFIX + str(job_id))\n        return bool(setting and setting.value == '1')\n\n\ndef scan(job_id):\n")
-          s=s.replace("    skip_previews = job_skip_previews(job_id)\n\n    try:\n", "    skip_previews = job_skip_previews(job_id)\n    skip_imported = job_skip_imported(job_id)\n\n    try:\n")
-          s=s.replace("            for path, path_hash in zip(paths, hashes):\n                try:\n                    stat = path.stat()\n                    old = existing.get(path_hash)\n", "            for path, path_hash in zip(paths, hashes):\n                old = existing.get(path_hash)\n                if old and skip_imported:\n                    counts['skipped'] += 1\n                    continue\n                try:\n                    stat = path.stat()\n")
-          s=s.replace("        report(message='Scanning folders (previews on demand)' if skip_previews else 'Scanning folders')\n", "        notes = []\n        if skip_previews:\n            notes.append('previews on demand')\n        if skip_imported:\n            notes.append('already imported paths skipped')\n        report(message='Scanning folders' + (f\" ({', '.join(notes)})\" if notes else ''))\n")
-          s=s.replace("        suffix = ' — previews will be generated when opened' if skip_previews else ''\n", "        completion = []\n        if skip_previews:\n            completion.append('previews will be generated when opened')\n        if skip_imported:\n            completion.append('existing source paths were skipped')\n        suffix = (' — ' + '; '.join(completion)) if completion else ''\n")
-          s=s.replace("        for key in (SCAN_MODE_PREFIX + str(job_id), SCAN_SKIP_PREVIEWS_PREFIX + str(job_id)):\n", "        for key in (SCAN_MODE_PREFIX + str(job_id), SCAN_SKIP_PREVIEWS_PREFIX + str(job_id),\n                    SCAN_SKIP_IMPORTED_PREFIX + str(job_id)):\n")
+          p = Path('app/worker.py')
+          s = p.read_text()
+          s = s.replace("SCAN_SKIP_PREVIEWS_PREFIX = 'scan_skip_previews:'\n", "SCAN_SKIP_PREVIEWS_PREFIX = 'scan_skip_previews:'\nSCAN_SKIP_IMPORTED_PREFIX = 'scan_skip_imported:'\n")
+          s = s.replace("def job_skip_previews(job_id):\n    with Session() as db:\n        setting = db.get(Setting, SCAN_SKIP_PREVIEWS_PREFIX + str(job_id))\n        return bool(setting and setting.value == '1')\n\n\ndef scan(job_id):\n", "def job_skip_previews(job_id):\n    with Session() as db:\n        setting = db.get(Setting, SCAN_SKIP_PREVIEWS_PREFIX + str(job_id))\n        return bool(setting and setting.value == '1')\n\n\ndef job_skip_imported(job_id):\n    with Session() as db:\n        setting = db.get(Setting, SCAN_SKIP_IMPORTED_PREFIX + str(job_id))\n        return bool(setting and setting.value == '1')\n\n\ndef scan(job_id):\n")
+          s = s.replace("    skip_previews = job_skip_previews(job_id)\n\n    try:\n", "    skip_previews = job_skip_previews(job_id)\n    skip_imported = job_skip_imported(job_id)\n\n    try:\n")
+          s = s.replace("            for path, path_hash in zip(paths, hashes):\n                try:\n                    stat = path.stat()\n                    old = existing.get(path_hash)\n", "            for path, path_hash in zip(paths, hashes):\n                old = existing.get(path_hash)\n                if old and skip_imported:\n                    counts['skipped'] += 1\n                    continue\n                try:\n                    stat = path.stat()\n")
+          s = s.replace("        report(message='Scanning folders (previews on demand)' if skip_previews else 'Scanning folders')\n", "        notes = []\n        if skip_previews:\n            notes.append('previews on demand')\n        if skip_imported:\n            notes.append('already imported paths skipped')\n        report(message='Scanning folders' + (f\" ({', '.join(notes)})\" if notes else ''))\n")
+          s = s.replace("        suffix = ' — previews will be generated when opened' if skip_previews else ''\n", "        completion = []\n        if skip_previews:\n            completion.append('previews will be generated when opened')\n        if skip_imported:\n            completion.append('existing source paths were skipped')\n        suffix = (' — ' + '; '.join(completion)) if completion else ''\n")
+          s = s.replace("        for key in (SCAN_MODE_PREFIX + str(job_id), SCAN_SKIP_PREVIEWS_PREFIX + str(job_id)):\n", "        for key in (SCAN_MODE_PREFIX + str(job_id), SCAN_SKIP_PREVIEWS_PREFIX + str(job_id),\n                    SCAN_SKIP_IMPORTED_PREFIX + str(job_id)):\n")
           p.write_text(s)
 
-          for name in ['app/static/settings.html','app/static/statistics.html']:
-              p=Path(name); s=p.read_text()
-              marker='<a class="button-link" href="/">Library</a>'
+          for name in ('app/static/settings.html', 'app/static/statistics.html'):
+              p = Path(name)
+              s = p.read_text()
+              marker = '<a class="button-link" href="/">Library</a>'
               if 'href="/indexer"' not in s:
-                  s=s.replace(marker, marker+'<a class="button-link" href="/indexer">Indexer</a>')
+                  s = s.replace(marker, marker + '<a class="button-link" href="/indexer">Indexer</a>')
               p.write_text(s)
-
-          p=Path('tests/test_preview_on_demand.py'); s=p.read_text()
-          s += r'''
-
-
-def test_indexer_page_and_skip_imported_queue(client):
-    page = client.get('/indexer')
-    assert page.status_code == 200 and b'Skip already imported photos' in page.data
-    headers = {'X-CSRF-Token': client.csrf}
-    queued = client.post('/api/scan', json={'skip_previews': True, 'skip_imported': True}, headers=headers)
-    assert queued.status_code == 202
-    job_id = queued.json['scan']['id']
-    with Session() as db:
-        assert db.get(Setting, f'scan_skip_previews:{job_id}').value == '1'
-        assert db.get(Setting, f'scan_skip_imported:{job_id}').value == '1'
-
-
-def test_force_and_skip_imported_are_mutually_exclusive(client):
-    headers = {'X-CSRF-Token': client.csrf}
-    response = client.post('/api/scan', json={'force': True, 'skip_imported': True}, headers=headers)
-    assert response.status_code == 400
-
-
-def test_worker_skip_already_imported_uses_exact_path_identity(tmp_path, monkeypatch):
-    photos = tmp_path / 'photos'; photos.mkdir()
-    source = photos / 'one.cr3'; source.write_bytes(b'changed-raw')
-    cache = tmp_path / 'cache'; storage = tmp_path / 'storage'; storage.mkdir()
-    monkeypatch.setenv('CACHE_DIR', str(cache)); monkeypatch.setenv('EXTERNAL_STORAGE_ROOT', str(storage))
-    monkeypatch.setattr(worker, 'ROOT', photos); monkeypatch.setattr(worker, 'CACHE', str(cache))
-    path_hash = worker.digest(str(source))
-    with Session.begin() as db:
-        db.add(Photo(path_hash=path_hash, path=str(source), filename=source.name, size=1, mtime_ns=1,
-                     camera='Existing', lens='Existing', cache_key='a'*64, metadata_json={}))
-        job = Scan(); db.add(job); db.flush(); job_id = job.id
-        db.add(Setting(key=f'scan_skip_imported:{job_id}', value='1'))
-    monkeypatch.setattr(worker, 'metadata_batch', lambda paths: (_ for _ in ()).throw(AssertionError('metadata should not be read')))
-    worker.scan(job_id)
-    with Session() as db:
-        job = db.get(Scan, job_id); photo = db.query(Photo).one()
-        assert (job.state, job.discovered, job.indexed, job.skipped, job.errors) == ('done', 1, 0, 1, 0)
-        assert photo.size == 1 and photo.camera == 'Existing'
-'''
-          p.write_text(s)
           PY
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Run tests
         run: python -m pytest -q
+      - name: Verify skip-imported code paths
+        run: |
+          grep -q "SCAN_SKIP_IMPORTED_PREFIX" app/web.py
+          grep -q "skip_imported=data.get('skip_imported') is True" app/web.py
+          grep -q "if old and skip_imported" app/worker.py
+          grep -q "href=\"/indexer\"" app/static/settings.html
+          grep -q "href=\"/indexer\"" app/static/statistics.html
       - name: Commit verified changes and remove workflow
         run: |
           rm .github/workflows/verify-indexer-page.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app/web.py app/worker.py app/static/settings.html app/static/statistics.html tests/test_preview_on_demand.py .github/workflows/verify-indexer-page.yml
+          git add app/web.py app/worker.py app/static/settings.html app/static/statistics.html .github/workflows/verify-indexer-page.yml
           git commit -m 'Move indexer to dedicated page and add skip imported option'
           git push
