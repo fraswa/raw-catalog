@@ -1,0 +1,39 @@
+name: Verify expanded statistics
+on:
+  push:
+permissions:
+  contents: write
+jobs:
+  test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+      - name: Python tests
+        run: python -m pytest -q
+      - name: Syntax checks
+        run: |
+          python -m py_compile app/statistics.py app/imaging.py
+          node --check app/static/statistics.js
+      - name: Verify expanded fields
+        run: |
+          grep -q "statistics_cache_v3" app/statistics.py
+          grep -q "lens_breakdowns" app/statistics.py
+          grep -q "SensorSize" app/imaging.py
+          grep -q "referenceCard" app/static/statistics.html
+          grep -q "megapixelBars" app/static/statistics.js
+      - name: Remove temporary workflow
+        if: success()
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/verify-expanded-statistics.yml
+          git commit -m 'Remove temporary expanded statistics verification'
+          git push
