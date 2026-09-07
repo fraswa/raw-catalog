@@ -6,9 +6,11 @@ from app.db import Setting
 THUMB_FOLDER_KEY = 'thumbnail_folder'
 PREVIEW_FOLDER_KEY = 'preview_folder'
 PREVIEW_EDGE_KEY = 'preview_edge'
+PREVIEW_QUALITY_KEY = 'preview_quality'
 DEFAULT_THUMB_FOLDER = 'thumbnails'
 DEFAULT_PREVIEW_FOLDER = 'previews'
 PREVIEW_EDGES = (1280, 1920, 2560, 3840, 5120)
+PREVIEW_QUALITIES = (60, 70, 80, 85, 88, 90, 92, 95)
 
 
 def cache_root():
@@ -86,6 +88,26 @@ def normalize_preview_edge(value):
     if edge not in PREVIEW_EDGES:
         raise ValueError('Preview size must be one of: ' + ', '.join(map(str, PREVIEW_EDGES)))
     return edge
+
+
+def configured_preview_quality(db):
+    setting = db.get(Setting, PREVIEW_QUALITY_KEY)
+    raw = setting.value if setting else '88'
+    try:
+        quality = int(raw)
+    except (TypeError, ValueError):
+        quality = 88
+    return quality if quality in PREVIEW_QUALITIES else 88
+
+
+def normalize_preview_quality(value):
+    try:
+        quality = int(value)
+    except (TypeError, ValueError):
+        raise ValueError('Invalid preview quality')
+    if quality not in PREVIEW_QUALITIES:
+        raise ValueError('Preview quality must be one of: ' + ', '.join(map(str, PREVIEW_QUALITIES)))
+    return quality
 
 
 def _resolve_root(value, normalize, label, create=False):
