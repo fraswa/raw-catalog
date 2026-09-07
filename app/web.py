@@ -5,11 +5,14 @@ from pathlib import Path
 from flask import Flask, request, jsonify, session, send_file, abort
 from sqlalchemy import select, func, or_, text
 from werkzeug.exceptions import HTTPException
-from app.db import Session, Photo, Scan, Setting, engine, init_db
+from app.db import Session, Photo, Scan, Setting, engine
 from app.imaging import cache_file
+from app.storage import (THUMB_FOLDER_KEY, cache_root, configured_thumbnail_folder,
+                         normalize_thumbnail_folder, resolve_thumbnail_root)
 
 
 SELECTED_FOLDER_KEY = 'selected_photo_folder'
+SCAN_MODE_PREFIX = 'scan_mode:'
 
 
 def configured_root():
@@ -101,6 +104,10 @@ def create_app():
     def index():
         return app.send_static_file('index.html')
 
+    @app.get('/settings')
+    def settings_page():
+        return app.send_static_file('settings.html')
+
     @app.get('/health')
     def health():
         with Session() as db:
@@ -185,9 +192,20 @@ def create_app():
             p = db.get(Photo, photo_id)
             if not p or not p.cache_key:
                 abort(404, 'Preview unavailable')
-            path = cache_file(os.environ.get('CACHE_DIR', '/data/cache'), p.cache_key, kind)
+            if kind == 'thumb':
+                relative = configured_thumbnail_folder(db)
+                try:
+                    root = resolve_thumbnail_root(relative, create=False)
+                except (ValueError, RuntimeError):
+                    abort(500, 'Thumbnail folder is unavailable')
+                path = cache_file(root, p.cache_key, 'thumb')
+                if not path.is_file():
+                    legacy = cache_file(cache_root(), p.cache_key, 'thumb')
+                    path = legacy if legacy.is_file() else path
+            else:
+                path = cache_file(cache_root(), p.cache_key, 'preview')
             if not path.is_file():
-                abort(404, 'Preview missing; run a scan to regenerate it')
+                abort(404, 'Preview missing; run a scan or thumbnail rebuild to regenerate it')
             return send_file(path, mimetype='image/jpeg', conditional=True)
 
     def active_scan(db):
@@ -232,29 +250,92 @@ def create_app():
                 setting.value = relative
         return jsonify(selected=relative, selected_display=display_root(relative))
 
+    def thumbnail_stats(db):
+        relative = configured_thumbnail_folder(db)
+        try:
+            root = resolve_thumbnail_root(relative, create=False)
+        except FileNotFoundError:
+            root = cache_root() / relative
+        except (ValueError, RuntimeError) as exc:
+            abort(500, f'Thumbnail folder is unavailable: {exc}')
+        files = 0
+        size = 0
+        if root.is_dir() and not root.is_symlink():
+            for directory, directories, filenames in os.walk(root, followlinks=False):
+                directories[:] = [d for d in directories if not Path(directory, d).is_symlink()]
+                for filename in filenames:
+                    if not filename.endswith('-thumb.jpg'):
+                        continue
+                    path = Path(directory, filename)
+                    try:
+                        if path.is_file() and not path.is_symlink():
+                            files += 1
+                            size += path.stat().st_size
+                    except OSError:
+                        continue
+        eligible = db.scalar(select(func.count()).select_from(Photo).where(Photo.cache_key.is_not(None))) or 0
+        average = (size / files) if files else 60 * 1024
+        return dict(folder=relative, path=str(root), files=files, bytes=size,
+                    eligible_photos=eligible, estimated_bytes=int(average * eligible),
+                    estimated_per_thumbnail=int(average),
+                    estimate_basis='current average' if files else '60 KB baseline')
+
+    @app.get('/api/settings/thumbnails')
+    def thumbnail_settings():
+        with Session() as db:
+            return jsonify(**thumbnail_stats(db), cache_root=str(cache_root()), active=bool(active_scan(db)))
+
+    @app.put('/api/settings/thumbnails')
+    def update_thumbnail_settings():
+        data = request.get_json(silent=True) or {}
+        try:
+            relative = normalize_thumbnail_folder(data.get('folder'))
+            resolve_thumbnail_root(relative, create=True)
+        except ValueError as exc:
+            abort(400, str(exc))
+        except RuntimeError as exc:
+            abort(503, str(exc))
+        with Session.begin() as db:
+            if active_scan(db):
+                abort(409, 'Cannot change the thumbnail folder while a scan is active')
+            setting = db.get(Setting, THUMB_FOLDER_KEY)
+            if setting is None:
+                db.add(Setting(key=THUMB_FOLDER_KEY, value=relative))
+            else:
+                setting.value = relative
+        with Session() as db:
+            return jsonify(**thumbnail_stats(db), cache_root=str(cache_root()), active=False)
+
     @app.delete('/api/cache/thumbnails')
     def purge_thumbnails():
         with Session() as db:
             if active_scan(db):
                 abort(409, 'Cannot purge thumbnails while a scan is active')
-        cache = Path(os.environ.get('CACHE_DIR', '/data/cache'))
+        cache = cache_root()
         removed = 0
         bytes_removed = 0
-        if cache.is_dir():
-            for path in cache.rglob('*-thumb.jpg'):
-                try:
-                    if path.is_file() and not path.is_symlink():
-                        bytes_removed += path.stat().st_size
-                        path.unlink()
-                        removed += 1
-                except FileNotFoundError:
+        if cache.is_dir() and not cache.is_symlink():
+            for directory, directories, filenames in os.walk(cache, topdown=True, followlinks=False):
+                directories[:] = [d for d in directories if not Path(directory, d).is_symlink()]
+                for filename in filenames:
+                    if not filename.endswith('-thumb.jpg'):
+                        continue
+                    path = Path(directory, filename)
+                    try:
+                        if path.is_file() and not path.is_symlink():
+                            bytes_removed += path.stat().st_size
+                            path.unlink()
+                            removed += 1
+                    except FileNotFoundError:
+                        continue
+                    except OSError as exc:
+                        abort(500, f'Could not purge thumbnail cache: {exc}')
+            for directory, directories, filenames in os.walk(cache, topdown=False, followlinks=False):
+                path = Path(directory)
+                if path == cache:
                     continue
-                except OSError as exc:
-                    abort(500, f'Could not purge thumbnail cache: {exc}')
-            for directory in sorted((p for p in cache.rglob('*') if p.is_dir()),
-                                    key=lambda p: len(p.parts), reverse=True):
                 try:
-                    directory.rmdir()
+                    path.rmdir()
                 except OSError:
                     pass
         return jsonify(ok=True, removed=removed, bytes_removed=bytes_removed)
@@ -263,6 +344,33 @@ def create_app():
         if not job:
             return None
         return {name: getattr(job, name) for name in ('id', 'state', 'discovered', 'indexed', 'skipped', 'errors', 'current_path', 'message', 'cancel')} | {'updated_at': job.updated_at.isoformat() + 'Z'}
+
+    def queue_job(mode='scan', force=False):
+        with engine.connect() as connection:
+            mysql = connection.dialect.name == 'mysql'
+            if mysql and connection.scalar(text("SELECT GET_LOCK('raw_catalog_scan_queue', 5)")) != 1:
+                abort(409, 'Scan queue busy; try again')
+            connection.commit()
+            try:
+                with Session(bind=connection) as db, db.begin():
+                    if db.scalar(select(Scan).where(Scan.state.in_(['queued', 'running'])).limit(1)):
+                        abort(409, 'A scan or rebuild is already queued or running')
+                    job = Scan(force=force, message='Thumbnail rebuild queued' if mode == 'thumbnails' else 'Waiting for indexer')
+                    db.add(job)
+                    db.flush()
+                    if mode != 'scan':
+                        db.add(Setting(key=SCAN_MODE_PREFIX + str(job.id), value=mode))
+                    result = serialize_scan(job)
+            finally:
+                if mysql:
+                    connection.execute(text("SELECT RELEASE_LOCK('raw_catalog_scan_queue')"))
+                    connection.commit()
+        return result
+
+    @app.post('/api/cache/thumbnails/rebuild')
+    def rebuild_thumbnail_cache():
+        result = queue_job('thumbnails')
+        return jsonify(scan=result), 202
 
     @app.get('/api/scan')
     def scan_status():
@@ -275,24 +383,7 @@ def create_app():
     @app.post('/api/scan')
     def start_scan():
         data = request.get_json(silent=True) or {}
-        with engine.connect() as connection:
-            mysql = connection.dialect.name == 'mysql'
-            if mysql and connection.scalar(text("SELECT GET_LOCK('raw_catalog_scan_queue', 5)")) != 1:
-                abort(409, 'Scan queue busy; try again')
-            connection.commit()
-            try:
-                with Session(bind=connection) as db, db.begin():
-                    active = db.scalar(select(Scan).where(Scan.state.in_(['queued', 'running'])).limit(1))
-                    if active:
-                        abort(409, 'A scan is already queued or running')
-                    job = Scan(force=data.get('force') is True)
-                    db.add(job)
-                    db.flush()
-                    result = serialize_scan(job)
-            finally:
-                if mysql:
-                    connection.execute(text("SELECT RELEASE_LOCK('raw_catalog_scan_queue')"))
-                    connection.commit()
+        result = queue_job('scan', force=data.get('force') is True)
         return jsonify(scan=result), 202
 
     @app.post('/api/scan/cancel')
