@@ -7,8 +7,9 @@ from datetime import datetime
 from pathlib import Path
 from sqlalchemy import select, update, func
 from app.db import Session, Photo, Scan, Setting, init_db, now
-from app.imaging import EXTENSIONS, metadata_batch, make_previews, make_thumbnail, cache_file
-from app.storage import configured_thumbnail_folder, resolve_thumbnail_root
+from app.imaging import EXTENSIONS, metadata_batch, make_previews, make_thumbnail, make_preview, cache_file
+from app.storage import (cache_root, configured_thumbnail_folder, configured_preview_folder,
+                         resolve_thumbnail_root, resolve_preview_root)
 
 log = logging.getLogger(__name__)
 CACHE = os.environ.get('CACHE_DIR', '/data/cache')
@@ -60,6 +61,15 @@ def current_thumbnail_root():
         raise RuntimeError(f'Invalid thumbnail folder: {exc}') from exc
 
 
+def current_preview_root():
+    with Session() as db:
+        relative = configured_preview_folder(db)
+    try:
+        return resolve_preview_root(relative, create=True)
+    except (ValueError, RuntimeError) as exc:
+        raise RuntimeError(f'Invalid preview folder: {exc}') from exc
+
+
 def capture_date(meta):
     for tag in ('DateTimeOriginal', 'CreateDate'):
         try:
@@ -81,7 +91,6 @@ def labels(meta):
 def scan(job_id):
     counts = dict(discovered=0, indexed=0, skipped=0, errors=0)
     last_message = 'Scanning folders'
-    thumbnail_cache = None
 
     def report(path='', message=None):
         nonlocal last_message
@@ -101,76 +110,84 @@ def scan(job_id):
         counts['errors'] += 1
         report(message=f'Folder could not be read: {error}')
 
-    def process(paths):
-        pending = []
-        hashes = [digest(str(p)) for p in paths]
-        with Session() as db:
-            existing = {p.path_hash: p for p in db.scalars(select(Photo).where(Photo.path_hash.in_(hashes)))}
-        for path, path_hash in zip(paths, hashes):
-            try:
-                stat = path.stat()
-                old = existing.get(path_hash)
-                cache_ok = (old and old.cache_key and not old.preview_error and
-                            cache_file(CACHE, old.cache_key, 'preview').is_file() and
-                            cache_file(thumbnail_cache, old.cache_key, 'thumb').is_file())
-                if old and not force and old.size == stat.st_size and old.mtime_ns == stat.st_mtime_ns and cache_ok:
-                    counts['skipped'] += 1
-                else:
-                    pending.append((path, path_hash, stat))
-            except OSError as exc:
-                counts['errors'] += 1
-                report(path, str(exc))
-        report()
-        if not pending:
-            return
-        try:
-            metadata = metadata_batch([p for p, _, _ in pending])
-        except Exception as exc:
-            counts['errors'] += len(pending)
-            report(message=f'Metadata batch failed: {exc}')
-            return
-        for path, path_hash, stat in pending:
-            report(path)
-            try:
-                meta = metadata.get(str(path))
-                if not meta or meta.get('Error'):
-                    raise ValueError((meta or {}).get('Error', 'No metadata returned'))
-                camera, lens = labels(meta)
-                key = digest(f'{path_hash}:{stat.st_mtime_ns}:{stat.st_size}')
-                preview_error = None
-                try:
-                    make_previews(path, meta, CACHE, key, thumbnail_cache)
-                except Exception as exc:
-                    preview_error = str(exc)[:2000]
-                    counts['errors'] += 1
-                    log.warning('Preview failed for %s: %s', path, exc)
-                after = path.stat()
-                if (stat.st_size, stat.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-                    raise ValueError('File changed during indexing; retry next scan')
-                with Session.begin() as db:
-                    photo = db.scalar(select(Photo).where(Photo.path_hash == path_hash))
-                    if photo is None:
-                        photo = Photo(path_hash=path_hash)
-                        db.add(photo)
-                    photo.path, photo.filename = str(path), path.name
-                    photo.size, photo.mtime_ns = stat.st_size, stat.st_mtime_ns
-                    photo.camera, photo.lens = camera, lens
-                    photo.taken_at, photo.metadata_json = capture_date(meta), meta
-                    photo.cache_key = key if not preview_error else None
-                    photo.preview_error, photo.indexed_at = preview_error, now()
-                counts['indexed'] += 1
-            except Exception as exc:
-                counts['errors'] += 1
-                report(path, f'Could not index file: {exc}')
-                log.exception('Could not index %s', path)
-        report()
-
     with Session.begin() as db:
         job = db.get(Scan, job_id)
         force = job.force
         job.state, job.updated_at = 'running', now()
+
     try:
         thumbnail_cache = current_thumbnail_root()
+        preview_cache = current_preview_root()
+        legacy_cache = cache_root()
+
+        def process(paths):
+            pending = []
+            hashes = [digest(str(p)) for p in paths]
+            with Session() as db:
+                existing = {p.path_hash: p for p in db.scalars(select(Photo).where(Photo.path_hash.in_(hashes)))}
+            for path, path_hash in zip(paths, hashes):
+                try:
+                    stat = path.stat()
+                    old = existing.get(path_hash)
+                    preview_ok = False
+                    thumb_ok = False
+                    if old and old.cache_key and not old.preview_error:
+                        preview_ok = (cache_file(preview_cache, old.cache_key, 'preview').is_file() or
+                                      cache_file(legacy_cache, old.cache_key, 'preview').is_file())
+                        thumb_ok = (cache_file(thumbnail_cache, old.cache_key, 'thumb').is_file() or
+                                    cache_file(legacy_cache, old.cache_key, 'thumb').is_file())
+                    if old and not force and old.size == stat.st_size and old.mtime_ns == stat.st_mtime_ns and preview_ok and thumb_ok:
+                        counts['skipped'] += 1
+                    else:
+                        pending.append((path, path_hash, stat))
+                except OSError as exc:
+                    counts['errors'] += 1
+                    report(path, str(exc))
+            report()
+            if not pending:
+                return
+            try:
+                metadata = metadata_batch([p for p, _, _ in pending])
+            except Exception as exc:
+                counts['errors'] += len(pending)
+                report(message=f'Metadata batch failed: {exc}')
+                return
+            for path, path_hash, stat in pending:
+                report(path)
+                try:
+                    meta = metadata.get(str(path))
+                    if not meta or meta.get('Error'):
+                        raise ValueError((meta or {}).get('Error', 'No metadata returned'))
+                    camera, lens = labels(meta)
+                    key = digest(f'{path_hash}:{stat.st_mtime_ns}:{stat.st_size}')
+                    preview_error = None
+                    try:
+                        make_previews(path, meta, preview_cache, key, thumbnail_cache)
+                    except Exception as exc:
+                        preview_error = str(exc)[:2000]
+                        counts['errors'] += 1
+                        log.warning('Preview failed for %s: %s', path, exc)
+                    after = path.stat()
+                    if (stat.st_size, stat.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                        raise ValueError('File changed during indexing; retry next scan')
+                    with Session.begin() as db:
+                        photo = db.scalar(select(Photo).where(Photo.path_hash == path_hash))
+                        if photo is None:
+                            photo = Photo(path_hash=path_hash)
+                            db.add(photo)
+                        photo.path, photo.filename = str(path), path.name
+                        photo.size, photo.mtime_ns = stat.st_size, stat.st_mtime_ns
+                        photo.camera, photo.lens = camera, lens
+                        photo.taken_at, photo.metadata_json = capture_date(meta), meta
+                        photo.cache_key = key if not preview_error else None
+                        photo.preview_error, photo.indexed_at = preview_error, now()
+                    counts['indexed'] += 1
+                except Exception as exc:
+                    counts['errors'] += 1
+                    report(path, f'Could not index file: {exc}')
+                    log.exception('Could not index %s', path)
+            report()
+
         root = selected_scan_root()
         pending = []
         for directory, directories, filenames in os.walk(root, followlinks=False, onerror=walk_error):
@@ -202,10 +219,11 @@ def scan(job_id):
         job.current_path = ''
 
 
-def rebuild_thumbnails(job_id):
+def rebuild_media(job_id, kind):
+    noun = 'thumbnail' if kind == 'thumb' else 'preview'
+    plural = 'thumbnails' if kind == 'thumb' else 'previews'
     counts = dict(discovered=0, indexed=0, skipped=0, errors=0)
-    last_message = 'Rebuilding thumbnails'
-    thumbnail_cache = None
+    last_message = f'Rebuilding {plural}'
 
     def report(path='', message=None):
         nonlocal last_message
@@ -214,7 +232,7 @@ def rebuild_thumbnails(job_id):
         with Session.begin() as db:
             job = db.get(Scan, job_id)
             if job.cancel:
-                raise InterruptedError('Thumbnail rebuild cancelled; completed thumbnails have been kept')
+                raise InterruptedError(f'{noun.capitalize()} rebuild cancelled; completed {plural} have been kept')
             for key, value in counts.items():
                 setattr(job, key, value)
             job.current_path = str(path)
@@ -225,10 +243,10 @@ def rebuild_thumbnails(job_id):
         job = db.get(Scan, job_id)
         job.state, job.message, job.updated_at = 'running', last_message, now()
     try:
-        thumbnail_cache = current_thumbnail_root()
+        output_root = current_thumbnail_root() if kind == 'thumb' else current_preview_root()
         with Session() as db:
             counts['discovered'] = db.scalar(select(func.count()).select_from(Photo).where(Photo.cache_key.is_not(None))) or 0
-        report(message=f'Rebuilding {counts["discovered"]} thumbnails')
+        report(message=f'Rebuilding {counts["discovered"]} {plural}')
         last_id = 0
         while True:
             with Session() as db:
@@ -243,25 +261,36 @@ def rebuild_thumbnails(job_id):
                     source = Path(photo.path)
                     if source.is_symlink() or not source.is_file():
                         raise OSError('Original file is unavailable')
-                    make_thumbnail(source, photo.metadata_json or {}, thumbnail_cache, photo.cache_key)
+                    if kind == 'thumb':
+                        make_thumbnail(source, photo.metadata_json or {}, output_root, photo.cache_key)
+                    else:
+                        make_preview(source, photo.metadata_json or {}, output_root, photo.cache_key)
                     counts['indexed'] += 1
                 except Exception as exc:
                     counts['errors'] += 1
-                    report(photo.path, f'Could not rebuild thumbnail: {exc}')
-                    log.warning('Thumbnail rebuild failed for %s: %s', photo.path, exc)
-        report(message='Thumbnail rebuild complete' if not counts['errors'] else 'Thumbnail rebuild complete with errors')
+                    report(photo.path, f'Could not rebuild {noun}: {exc}')
+                    log.warning('%s rebuild failed for %s: %s', noun.capitalize(), photo.path, exc)
+        report(message=f'{noun.capitalize()} rebuild complete' if not counts['errors'] else f'{noun.capitalize()} rebuild complete with errors')
         state, message = 'done', last_message
     except InterruptedError as exc:
         state, message = 'cancelled', str(exc)
     except Exception as exc:
         state, message = 'failed', str(exc)
-        log.exception('Thumbnail rebuild failed')
+        log.exception('%s rebuild failed', noun.capitalize())
     with Session.begin() as db:
         job = db.get(Scan, job_id)
         for key, value in counts.items():
             setattr(job, key, value)
         job.state, job.message, job.updated_at = state, message, now()
         job.current_path = ''
+
+
+def rebuild_thumbnails(job_id):
+    rebuild_media(job_id, 'thumb')
+
+
+def rebuild_previews(job_id):
+    rebuild_media(job_id, 'preview')
 
 
 def job_mode(job_id):
@@ -294,6 +323,8 @@ def main():
                 mode = job_mode(job.id)
                 if mode == 'thumbnails':
                     rebuild_thumbnails(job.id)
+                elif mode == 'previews':
+                    rebuild_previews(job.id)
                 else:
                     scan(job.id)
                 clear_job_mode(job.id)
