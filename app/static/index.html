@@ -13,7 +13,13 @@
 <section id="grid" class="grid" aria-label="Matching photographs"></section>
 <div id="empty" class="empty" hidden><span class="empty-icon">[ &nbsp; ]</span><h2 id="emptyTitle">Your archive starts here</h2><p id="emptyText">Index your photo folder to browse cameras, lenses and photographs.</p></div>
 <div class="load-row"><button id="loadMore" hidden>Load more photographs</button></div>
-<details class="scan-panel" id="scanPanel"><summary>Indexer <span id="scanState">Ready</span></summary><div class="scan-body"><p id="scanMessage">Run a scan to add new or changed photographs.</p><p id="scanCounts"></p><p id="scanPath" class="path"></p><div class="scan-actions"><label class="check"><input id="force" type="checkbox"> Rebuild metadata and previews for every photo</label><button id="cancelScan" hidden>Cancel scan</button></div></div></details>
+<details class="scan-panel" id="scanPanel"><summary>Indexer <span id="scanState">Ready</span></summary><div class="scan-body">
+<p id="scanMessage">Run a scan to add new or changed photographs.</p><p id="scanCounts"></p><p id="scanPath" class="path"></p>
+<div class="folder-control"><div><span class="control-label">Photo folder</span><strong id="selectedFolder">/photos</strong></div><button id="browseFolder">Browse folders</button></div>
+<div id="folderBrowser" class="folder-browser" hidden><div class="folder-toolbar"><button id="folderUp">Up</button><strong id="folderCurrent">/photos</strong><button id="closeFolderBrowser">Close</button></div><div id="folderList" class="folder-list"></div><div class="folder-select-row"><button id="selectFolder" class="primary">Use this folder</button></div></div>
+<p id="cacheMessage" class="path"></p>
+<div class="scan-actions"><label class="check"><input id="force" type="checkbox"> Rebuild metadata and previews for every photo</label><div class="scan-buttons"><button id="purgeThumbnails">Purge thumbnails</button><button id="cancelScan" hidden>Cancel scan</button></div></div>
+</div></details>
 </main><footer>RAW Catalog <span>Camera + lens filters match together</span></footer>
 </div>
 <dialog id="viewer" aria-labelledby="viewerTitle"><div class="viewer-layout"><div class="viewer-top"><div><strong id="viewerTitle"></strong><span id="viewerPosition"></span></div><div><button id="fullScreen" title="Enter full screen">Full screen</button><button id="closeViewer" aria-label="Close preview">Close ×</button></div></div><div class="stage"><button id="previous" class="nav prev" aria-label="Previous photo">‹</button><img id="previewImage" alt=""><p id="previewMessage" hidden></p><button id="next" class="nav next" aria-label="Next photo">›</button></div><div class="viewer-bottom"><div><strong id="viewerCamera"></strong><span id="viewerLens"></span></div><p id="exposure"></p><details><summary>File details</summary><p id="viewerPath" class="path"></p><pre id="metadata"></pre></details></div></div></dialog>
