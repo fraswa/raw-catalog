@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 let csrf = '', items = [], cursor = null, total = 0, viewing = -1, revision = 0, detailRevision = 0;
-let loading = false, authenticated = false, scanSignature = '', timer;
+let loading = false, authenticated = false, scanSignature = '', timer, browsePath = '';
 const nf = new Intl.NumberFormat();
 async function api(url, options = {}) {
   const response = await fetch(url, {...options, headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf, ...(options.headers || {})}});
@@ -78,17 +78,42 @@ async function view(index) {
     $('exposure').textContent = [m.FocalLength, m.FNumber ? `f/${m.FNumber}` : null, m.ExposureTime ? `${m.ExposureTime} s` : null, m.ISO ? `ISO ${m.ISO}` : null].filter(Boolean).join(' · ');
   } catch(err) { if (rev === detailRevision) $('metadata').textContent = err.message; }
 }
+function formatBytes(value) {
+  if (!value) return '0 B';
+  const units = ['B','KB','MB','GB','TB'];
+  const index = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024)));
+  return `${(value / (1024 ** index)).toFixed(index ? 1 : 0)} ${units[index]}`;
+}
+async function loadFolders(path = '') {
+  const data = await api('/api/folders?path=' + encodeURIComponent(path));
+  browsePath = data.current;
+  $('folderCurrent').textContent = data.current_display;
+  $('folderUp').disabled = data.parent === null;
+  $('folderUp').dataset.path = data.parent ?? '';
+  $('folderList').replaceChildren();
+  if (!data.directories.length) {
+    const empty = document.createElement('span'); empty.className = 'folder-empty'; empty.textContent = 'No subfolders'; $('folderList').append(empty);
+  }
+  for (const folder of data.directories) {
+    const button = document.createElement('button'); button.className = 'folder-entry'; button.textContent = folder.name;
+    button.onclick = () => loadFolders(folder.path).catch(error);
+    $('folderList').append(button);
+  }
+  return data;
+}
 async function pollScan() {
   if (!authenticated) return;
   try {
     const data = await api('/api/scan'), job = data.scan, active = job && ['queued','running'].includes(job.state);
     $('scanButton').disabled = !!active; $('scanButton').textContent = active ? 'Indexing…' : 'Index photos';
     $('force').disabled = !!active; $('cancelScan').hidden = !active;
+    $('browseFolder').disabled = !!active; $('purgeThumbnails').disabled = !!active;
     $('cancelScan').disabled = !!job?.cancel; $('cancelScan').textContent = job?.cancel ? 'Cancelling…' : 'Cancel scan';
     $('scanState').textContent = job ? job.state : 'Ready';
     $('scanMessage').textContent = job ? job.message : `Photo folder: ${data.root}`;
     $('scanCounts').textContent = job ? `${nf.format(job.discovered)} found · ${nf.format(job.indexed)} indexed · ${nf.format(job.skipped)} unchanged · ${nf.format(job.errors)} errors` : '';
     $('scanPath').textContent = job?.current_path || '';
+    $('selectedFolder').textContent = data.root; $('selectedFolder').dataset.path = data.selected || '';
     if (job && active && Date.now() - Date.parse(job.updated_at) > 300000) $('scanMessage').textContent += ' — No recent progress. Check worker logs.';
     const signature = job ? `${job.id}:${job.state}` : '';
     if (scanSignature && signature !== scanSignature && !active && !$('viewer').open) await search();
@@ -109,6 +134,31 @@ $('reset').onclick = () => { clearTimeout(debounce); $('camera').value = ''; $('
 $('loadMore').onclick = () => search(true);
 $('scanButton').onclick = async () => { $('scanButton').disabled = true; try { await api('/api/scan',{method:'POST',body:JSON.stringify({force:$('force').checked})}); $('scanPanel').open = true; clearTimeout(timer); await pollScan(); } catch(err) { error(err); $('scanButton').disabled = false; } };
 $('cancelScan').onclick = async () => { try { await api('/api/scan/cancel',{method:'POST'}); clearTimeout(timer); await pollScan(); } catch(err) { error(err); } };
+$('browseFolder').onclick = async () => {
+  $('folderBrowser').hidden = false; $('cacheMessage').textContent = '';
+  try { await loadFolders($('selectedFolder').dataset.path || ''); }
+  catch(err) { try { await loadFolders(''); } catch(rootErr) { error(rootErr); $('folderBrowser').hidden = true; } }
+};
+$('closeFolderBrowser').onclick = () => { $('folderBrowser').hidden = true; };
+$('folderUp').onclick = () => loadFolders($('folderUp').dataset.path || '').catch(error);
+$('selectFolder').onclick = async () => {
+  $('selectFolder').disabled = true;
+  try {
+    const data = await api('/api/folders/select',{method:'POST',body:JSON.stringify({path:browsePath})});
+    $('selectedFolder').textContent = data.selected_display; $('selectedFolder').dataset.path = data.selected;
+    $('folderBrowser').hidden = true; clearTimeout(timer); await pollScan();
+  } catch(err) { error(err); }
+  finally { $('selectFolder').disabled = false; }
+};
+$('purgeThumbnails').onclick = async () => {
+  if (!window.confirm('Delete all generated thumbnails? Originals and full-size previews will not be touched.')) return;
+  $('purgeThumbnails').disabled = true; $('cacheMessage').textContent = 'Purging thumbnail cache…';
+  try {
+    const data = await api('/api/cache/thumbnails',{method:'DELETE'});
+    $('cacheMessage').textContent = `Removed ${nf.format(data.removed)} thumbnails (${formatBytes(data.bytes_removed)}). Run Index photos to regenerate them.`;
+  } catch(err) { $('cacheMessage').textContent = ''; error(err); }
+  finally { $('purgeThumbnails').disabled = false; }
+};
 $('closeViewer').onclick = () => $('viewer').close();
 $('viewer').addEventListener('close', () => { detailRevision++; if(document.fullscreenElement) document.exitFullscreen().catch(()=>{}); });
 $('previous').onclick = () => view(viewing-1); $('next').onclick = () => view(viewing+1);
