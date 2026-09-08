@@ -1,0 +1,34 @@
+name: Optimize statistics cache validation
+on:
+  push:
+    paths:
+      - 'tools/optimize_statistics_cache.py'
+      - '.github/workflows/optimize-statistics-cache.yml'
+permissions:
+  contents: write
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply optimization
+        run: python tools/optimize_statistics_cache.py
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Tests
+        run: python -m pytest -q
+      - name: Syntax checks
+        run: |
+          python -m compileall -q app
+          node --check app/static/statistics.js
+      - name: Commit verified optimization
+        run: |
+          rm tools/optimize_statistics_cache.py .github/workflows/optimize-statistics-cache.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/db.py app/statistics.py app/worker.py tools/optimize_statistics_cache.py .github/workflows/optimize-statistics-cache.yml
+          git commit -m 'Make unchanged statistics cache checks constant-time'
+          git push
