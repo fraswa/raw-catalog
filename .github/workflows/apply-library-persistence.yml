@@ -15,6 +15,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Fix patch runner anchor
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tools/persistent_options_edits_favorites_patch.py')
+          text = p.read_text()
+          old = '<button id=\\"closeViewer\\" aria-label=\\"Close preview\\">Close ×</button></div>\\n\"\"\"'
+          new = '<button id=\\"closeViewer\\" aria-label=\\"Close preview\\">Close ×</button></div>\"\"\"'
+          if old not in text:
+              raise SystemExit('viewer anchor fix not found')
+          p.write_text(text.replace(old, new, 1))
+          PY
       - name: Apply feature patch
         run: python tools/persistent_options_edits_favorites_patch.py
       - name: Install dependencies
