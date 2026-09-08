@@ -1,0 +1,41 @@
+name: Fix statistics visible boot fallback
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/fix_statistics_boot.py'
+      - '.github/workflows/fix-statistics-boot.yml'
+permissions:
+  contents: write
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply fix
+        run: python tools/fix_statistics_boot.py
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Tests
+        run: python -m pytest -q
+      - name: Syntax checks
+        run: |
+          python -m compileall -q app
+          node --check app/static/statistics.js
+      - name: Verify visible fallback
+        run: |
+          grep -q '<div id="statisticsApp">' app/static/statistics.html
+          grep -q 'statisticsBootError' app/static/statistics.html
+          grep -q 'fatalStatisticsError' app/static/statistics.js
+          grep -q 'statistics.js?v=7' app/static/statistics.html
+      - name: Commit verified fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app
+          git rm tools/fix_statistics_boot.py .github/workflows/fix-statistics-boot.yml
+          git commit -m 'Make statistics startup failures visible'
+          git push
