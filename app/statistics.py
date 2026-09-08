@@ -161,7 +161,7 @@ def build_statistics(db, force=False):
         sensor_type = _clean_text(co.get('sensor_type')) or _clean_text(metadata.get('SensorType'))
         lens_type = _clean_text(lo.get('lens_type')) or _clean_text(metadata.get('LensType'))
         max_aperture = _clean_text(lo.get('max_aperture')) or _clean_text(metadata.get('MaxApertureValue'))
-        mount = _clean_text(lo.get('mount')) or _clean_text(co.get('mount')) or _lens_mount(metadata, camera, lens)
+        mount = _clean_text(lo.get('mount')) or _lens_mount(metadata, camera, lens) or _clean_text(co.get('mount'))
         if maker: makers[maker] += 1; camera_makers[camera][maker] += 1
         if lens_maker: lens_makers[lens_maker] += 1; lens_maker_counts[lens][lens_maker] += 1
         if megapixel: megapixels[megapixel] += 1; camera_megapixels[camera][megapixel] += 1

@@ -146,3 +146,11 @@ def test_reference_database_rich_fields_and_mount_breakdown(client):
     r6=next(row for row in database['cameras'] if row['name']=='Canon EOS R6')
     assert r6['override']['sensor_type']=='Full-frame CMOS'
     assert any(field['name']=='notes' for field in database['fields']['camera'])
+
+
+def test_purge_previously_indexed_macos_garbage():
+    from app.worker import purge_macos_garbage_rows
+    with Session.begin() as db:
+        db.add(Photo(path_hash="junk", path="/photos/._junk.dng", filename="._junk.dng", size=1, mtime_ns=1, camera="Unknown", lens="Unknown"))
+        db.add(Photo(path_hash="good", path="/photos/good.dng", filename="good.dng", size=1, mtime_ns=1, camera="Good", lens="Good"))
+    assert purge_macos_garbage_rows() == 1

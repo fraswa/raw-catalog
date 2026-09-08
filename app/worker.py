@@ -6,7 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from sqlalchemy import select, update, func
+from sqlalchemy import select, update, func, delete, or_
 from app.db import Session, Photo, Scan, Setting, init_db, now
 from app.imaging import (EXTENSIONS, metadata_batch, make_previews, make_thumbnail, make_preview,
                          cache_file, close_exiftool_sessions)
@@ -32,6 +32,18 @@ MACOS_GARBAGE_DIRS = {'.AppleDouble', '__MACOSX', '.Spotlight-V100', '.Trashes',
 
 def is_macos_garbage_name(name):
     return name == '.DS_Store' or name.startswith('._')
+
+
+def purge_macos_garbage_rows():
+    clauses = [Photo.filename.startswith('._', autoescape=True), Photo.filename == '.DS_Store']
+    for directory in ('.AppleDouble', '__MACOSX', '.Spotlight-V100', '.Trashes', '.fseventsd'):
+        clauses.append(Photo.path.contains('/' + directory + '/', autoescape=True))
+    with Session.begin() as db:
+        result = db.execute(delete(Photo).where(or_(*clauses)))
+        removed = result.rowcount or 0
+    if removed:
+        log.info('Removed %s previously indexed macOS metadata rows', removed)
+    return removed
 
 
 def digest(value):
@@ -172,6 +184,7 @@ def scan(job_id):
     skip_imported = job_skip_imported(job_id)
     skip_post_stat = job_skip_post_stat(job_id)
     parallelism = job_parallelism(job_id)
+    purge_macos_garbage_rows()
 
     try:
         thumbnail_cache = current_thumbnail_root()
