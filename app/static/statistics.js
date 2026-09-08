@@ -13,6 +13,11 @@ function libraryUrl(filters){const p=new URLSearchParams(filters);return '/?'+p.
 function emptyBars(host){const span=document.createElement('span');span.className='read-only';span.textContent='No metadata available';host.append(span);}
 function pct(value,total){return total?Math.round(value*1000/total)/10:0;}
 function coverageText(value,total,prefix){return `${prefix}: ${nf.format(value||0)} of ${nf.format(total||0)} photos (${pct(value||0,total||0)}%)`;}
+const LIST_PREVIEW_LIMIT=20;
+function visibleRows(rows,checkboxId){return $(checkboxId).checked?(rows||[]):(rows||[]).slice(0,LIST_PREVIEW_LIMIT);}
+function syncListToggle(checkboxId,labelId,noun,count){const checkbox=$(checkboxId),label=$(labelId),expandable=count>LIST_PREVIEW_LIMIT;checkbox.disabled=!expandable;if(!expandable)checkbox.checked=false;label.textContent=expandable?`Show all ${noun} (${nf.format(count)})`:`All ${noun} shown (${nf.format(count)})`;}
+function renderCameraUsage(){if(!archiveData)return;const rows=archiveData.cameras||[];syncListToggle('showAllCameras','showAllCamerasLabel','cameras',rows.length);renderBars('cameraBars',visibleRows(rows,'showAllCameras'),{camera:true,total:archiveData.total_photos,referenceType:'camera'});}
+function renderLensUsage(){if(!archiveData)return;const detail=selectedCamera?archiveData.camera_breakdowns?.[selectedCamera]:null;const rows=detail?.lenses||archiveData.lenses||[];syncListToggle('showAllLenses','showAllLensesLabel','lenses',rows.length);renderBars('lensBars',visibleRows(rows,'showAllLenses'),{libraryParam:'lens',includeCamera:!!detail,total:detail?.total_photos||archiveData.total_photos,referenceType:'lens'});}
 
 function cancelReferenceHide(){clearTimeout(referenceHideTimer);referenceHideTimer=null;}
 function scheduleReferenceHide(){cancelReferenceHide();referenceHideTimer=setTimeout(()=>hideReference(),220);}
@@ -151,8 +156,8 @@ function selectCamera(camera){
   $('cameraScopeLibrary').href=libraryUrl({camera});
   $('lensHeading').textContent=`Lens usage — ${camera}`;$('focalHeading').textContent=`Focal lengths — ${camera}`;$('apertureHeading').textContent=`Apertures — ${camera}`;$('trendHeading').textContent=`${camera} usage — last 60 active months`;$('yearHeading').textContent=`${camera} photographs by year`;
   renderSummary(archiveData,detail);
-  renderBars('cameraBars',archiveData.cameras,{camera:true,total:archiveData.total_photos,referenceType:'camera'});
-  renderBars('lensBars',detail.lenses,{libraryParam:'lens',includeCamera:true,total:detail.total_photos,referenceType:'lens'});
+  renderCameraUsage();
+  renderLensUsage();
   renderBars('focalBars',detail.focal_lengths,{total:detail.total_photos});
   renderBars('apertureBars',detail.apertures,{total:detail.total_photos});
   renderBars('yearBars',(detail.yearly||[]).map(x=>({value:x.year,count:x.count})).reverse(),{total:detail.dated_photos});
@@ -167,8 +172,8 @@ function show(data, resetSelection=true){
   archiveData=data;if(resetSelection)selectedCamera='';hideReference();
   $('statisticsLoading').hidden=true;$('statisticsContent').hidden=false;$('statisticsError').hidden=true;$('cameraScope').hidden=true;
   renderSummary(data);$('generatedAt').textContent=`${data.cached?'Cached':'Calculated'} ${new Date(data.generated_at).toLocaleString()}`;
-  renderBars('cameraBars',data.cameras,{camera:true,total:data.total_photos,referenceType:'camera'});
-  renderBars('lensBars',data.lenses,{libraryParam:'lens',total:data.total_photos,referenceType:'lens'});
+  renderCameraUsage();
+  renderLensUsage();
   renderBars('focalBars',data.focal_lengths,{total:data.total_photos});
   renderBars('apertureBars',data.apertures,{total:data.total_photos});
   renderTechnical(data);
@@ -176,6 +181,8 @@ function show(data, resetSelection=true){
 }
 async function load(force=false){$('statisticsLoading').hidden=false;$('statisticsContent').hidden=true;$('refreshStats').disabled=true;try{show(await api('/api/statistics'+(force?'?refresh=1':'')));}catch(err){$('statisticsLoading').hidden=true;showError(err);}finally{$('refreshStats').disabled=false;}}
 $('clearCameraScope').onclick=clearCamera;
+$('showAllCameras').onchange=renderCameraUsage;
+$('showAllLenses').onchange=renderLensUsage;
 $('refreshStats').onclick=()=>load(true);
 $('signOut').onclick=async()=>{try{await api('/api/logout',{method:'POST'});}finally{location.href='/';}};
 $('referenceCard').addEventListener('mouseenter',cancelReferenceHide);$('referenceCard').addEventListener('mouseleave',scheduleReferenceHide);

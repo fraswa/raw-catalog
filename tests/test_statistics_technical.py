@@ -93,3 +93,20 @@ def test_technical_statistics_and_reference_breakdowns(client):
     assert lens['distinct_cameras'] == 1
     assert lens['mounts'][0]['value'] == 'Canon RF'
     assert lens['focal_lengths'][0]['value'] == '50 mm'
+
+
+def test_statistics_exposes_complete_camera_and_lens_lists(client):
+    with Session.begin() as db:
+        for index in range(25):
+            db.add(Photo(
+                path_hash=f'full-list-{index}', path=f'/photos/full-{index}.dng',
+                filename=f'full-{index}.dng', size=1, mtime_ns=index + 1,
+                camera=f'Camera {index:02d}', lens=f'Lens {index:02d}',
+                metadata_json={'Make': 'Test'},
+            ))
+
+    data = client.get('/api/statistics?refresh=1').json
+    assert len(data['cameras']) == 25
+    assert len(data['lenses']) == 25
+    assert data['cameras'][0]['count'] == 1
+    assert data['lenses'][0]['count'] == 1

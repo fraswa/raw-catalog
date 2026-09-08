@@ -7,7 +7,7 @@ from sqlalchemy import select, func
 from app.db import Photo, Setting
 from app.reference import load_reference_overrides, reference_fingerprint
 
-CACHE_KEY = 'statistics_cache_v3'
+CACHE_KEY = 'statistics_cache_v4'
 _number = re.compile(r'[-+]?\d+(?:\.\d+)?')
 
 
@@ -233,7 +233,7 @@ def build_statistics(db, force=False):
             'sensor_size': _first(camera_sensors[camera]),
             'mounts': _top(camera_mounts[camera], 5),
             'active_years': _active_years(camera_years[camera]),
-            'lenses': _top(camera_lenses[camera]),
+            'lenses': _top(camera_lenses[camera], None),
             'focal_lengths': _top(camera_focals[camera]),
             'apertures': _top(camera_apertures[camera]),
             'yearly': [{'year': year, 'count': camera_years[camera][year]}
@@ -266,7 +266,7 @@ def build_statistics(db, force=False):
         'total_photos': total, 'dated_photos': dated, 'undated_photos': total - dated,
         'distinct_cameras': len(cameras), 'distinct_lenses': len(lenses),
         'distinct_focal_lengths': len(focals), 'distinct_apertures': len(apertures),
-        'cameras': _top(cameras), 'lenses': _top(lenses), 'focal_lengths': _top(focals), 'apertures': _top(apertures),
+        'cameras': _top(cameras, None), 'lenses': _top(lenses, None), 'focal_lengths': _top(focals), 'apertures': _top(apertures),
         'makers': _top(makers), 'lens_makers': _top(lens_makers), 'mounts': _top(mounts),
         'sensor_sizes': _top(sensor_sizes), 'megapixels': _top(megapixels),
         'maker_coverage': sum(makers.values()), 'mount_coverage': sum(mounts.values()),
