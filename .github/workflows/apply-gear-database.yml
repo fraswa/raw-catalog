@@ -18,7 +18,7 @@ jobs:
       - name: Apply feature patch
         run: python tools/apply_gear_database.py
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt pytest
       - name: Python tests
         run: python -m pytest -q
       - name: Syntax checks
