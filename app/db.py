@@ -28,6 +28,7 @@ class Photo(Base):
     cache_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     preview_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     indexed_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    favorite: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     __table_args__ = (Index('ix_camera_lens_id', 'camera', 'lens', 'id'),)
 
 
@@ -72,8 +73,31 @@ def _upgrade_mysql_schema():
         """))
         if data_type and str(data_type).lower() != 'longtext':
             connection.execute(text('ALTER TABLE settings MODIFY value LONGTEXT NOT NULL'))
+        favorite_column = connection.scalar(text("""
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'photos' AND COLUMN_NAME = 'favorite'
+        """))
+        if not favorite_column:
+            connection.execute(text('ALTER TABLE photos ADD COLUMN favorite BOOLEAN NOT NULL DEFAULT 0'))
+        favorite_index = connection.scalar(text("""
+            SELECT COUNT(*) FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'photos' AND INDEX_NAME = 'ix_photos_favorite'
+        """))
+        if not favorite_index:
+            connection.execute(text('CREATE INDEX ix_photos_favorite ON photos (favorite)'))
+
+
+def _upgrade_sqlite_schema():
+    if engine.dialect.name != 'sqlite':
+        return
+    with engine.begin() as connection:
+        columns = {row[1] for row in connection.execute(text('PRAGMA table_info(photos)'))}
+        if columns and 'favorite' not in columns:
+            connection.execute(text('ALTER TABLE photos ADD COLUMN favorite BOOLEAN NOT NULL DEFAULT 0'))
+        connection.execute(text('CREATE INDEX IF NOT EXISTS ix_photos_favorite ON photos (favorite)'))
 
 
 def init_db():
     Base.metadata.create_all(engine)
     _upgrade_mysql_schema()
+    _upgrade_sqlite_schema()

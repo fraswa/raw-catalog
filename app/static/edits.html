@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>RAW Catalog Edits</title><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/controls.css"><link rel="stylesheet" href="/static/edits.css"><script defer src="/static/edits.js"></script></head>
+<body>
+<div id="editsApp" hidden>
+<header><div class="brand"><span class="mark">R / C</span><div><strong>RAW Catalog</strong><span>Saved edits</span></div></div><div class="header-actions"><a class="button-link" href="/">Library</a><a class="button-link" href="/indexer">Indexer</a><a class="button-link" href="/statistics">Statistics</a><a class="button-link" href="/settings">Settings</a><button id="signOut">Sign out</button></div></header>
+<main class="edits-main"><div class="title-row"><div><p class="eyebrow">EDITED JPEGS</p><h1>Saved RAW editor output<span id="editCount">—</span></h1></div><button id="refreshEdits">Refresh</button></div><p id="editFolder" class="edits-folder"></p><div id="editsError" class="error" role="alert" hidden></div><div id="editsLoading" class="empty"><h2>Loading saved edits…</h2></div><section id="editsGrid" class="edits-grid"></section><div id="editsEmpty" class="empty" hidden><h2>No saved edits</h2><p>Save a full-resolution JPEG from the RAW editor and it will appear here.</p></div></main>
+<footer>RAW Catalog <span>Saved JPEGs are separate from the read-only RAW archive</span></footer>
+</div>
+<dialog id="editViewer"><div class="saved-viewer"><div class="viewer-top"><strong id="savedViewerTitle"></strong><button id="closeSavedViewer">Close ×</button></div><div class="saved-stage"><img id="savedViewerImage" alt="Saved edited JPEG"></div></div></dialog>
+</body></html>

@@ -19,6 +19,7 @@
 <label class="option-row"><input id="skipImported" type="checkbox"><span><strong>Skip already imported photos</strong><small>Skip any photo whose exact source path is already in the catalog, even if the file changed or generated media is missing.</small></span></label>
 <label class="option-row"><input id="force" type="checkbox"><span><strong>Force re-index existing photos</strong><small>Re-read metadata and regenerate requested media even when an existing photo appears unchanged. Mutually exclusive with Skip already imported.</small></span></label>
 <label class="option-row"><input id="skipPostStat" type="checkbox"><span><strong>Fast SMB mode</strong><small>Skip the second source-file stat after processing to reduce SMB round trips. The initial stat, metadata read and read-only protections remain. Source changes during processing are detected on the next scan instead.</small></span></label>
+<div class="identity-note"><strong>Persistent import options</strong><span id="importDefaultsState">Loading saved defaults…</span></div>
 <div class="identity-note"><strong>Photo identity</strong><span>Already imported currently means the exact source path. The catalog stores a SHA-256 hash of that path; moving or copying the same RAW to a different path creates another catalog entry.</span></div>
 <div class="start-row"><button id="startScan" class="primary">Start indexing</button></div>
 </section>

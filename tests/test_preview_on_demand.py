@@ -264,3 +264,66 @@ def test_fast_smb_setting_is_recorded(client):
     with Session() as db:
         setting = db.get(Setting, f'scan_skip_post_stat:{job_id}')
         assert setting is not None and setting.value == '1'
+
+
+
+def test_import_options_are_persistent(client):
+    headers = {'X-CSRF-Token': client.csrf}
+    initial = client.get('/api/settings/import')
+    assert initial.status_code == 200
+    assert initial.json['parallelism'] == 4
+    saved = client.put('/api/settings/import', json={
+        'parallelism': 6, 'skip_previews': True, 'skip_imported': True,
+        'force': False, 'skip_post_stat': True,
+    }, headers=headers)
+    assert saved.status_code == 200
+    assert saved.json['parallelism'] == 6 and saved.json['skip_post_stat'] is True
+    again = client.get('/api/settings/import').json
+    assert again == saved.json
+    queued = client.post('/api/scan', json={}, headers=headers)
+    assert queued.status_code == 202
+    job_id = queued.json['scan']['id']
+    with Session() as db:
+        assert db.get(Setting, f'scan_parallelism:{job_id}').value == '6'
+        assert db.get(Setting, f'scan_skip_previews:{job_id}').value == '1'
+        assert db.get(Setting, f'scan_skip_imported:{job_id}').value == '1'
+        assert db.get(Setting, f'scan_skip_post_stat:{job_id}').value == '1'
+
+
+def test_favorite_toggle_and_filter(client):
+    headers = {'X-CSRF-Token': client.csrf}
+    with Session.begin() as db:
+        first = Photo(path_hash='favorite-a', path='/photos/a.cr3', filename='a.cr3', size=1, mtime_ns=1,
+                      camera='Canon', lens='Lens A', metadata_json={})
+        second = Photo(path_hash='favorite-b', path='/photos/b.cr3', filename='b.cr3', size=1, mtime_ns=1,
+                       camera='Canon', lens='Lens B', metadata_json={})
+        db.add_all([first, second]); db.flush(); first_id = first.id
+    changed = client.put(f'/api/photos/{first_id}/favorite', json={'favorite': True}, headers=headers)
+    assert changed.status_code == 200 and changed.json['favorite'] is True
+    filtered = client.get('/api/photos?favorite=1')
+    assert filtered.status_code == 200
+    assert filtered.json['total'] == 1
+    assert filtered.json['items'][0]['id'] == first_id
+    assert filtered.json['items'][0]['favorite'] is True
+    with Session() as db:
+        assert db.get(Photo, first_id).favorite is True
+
+
+def test_saved_edits_gallery_download_and_delete(client, tmp_path, monkeypatch):
+    cache = tmp_path / 'cache'; storage = tmp_path / 'storage'; storage.mkdir()
+    edit_root = storage / 'edits'; edit_root.mkdir()
+    monkeypatch.setenv('CACHE_DIR', str(cache))
+    monkeypatch.setenv('EXTERNAL_STORAGE_ROOT', str(storage))
+    with Session.begin() as db:
+        db.add(Setting(key='edit_folder', value=str(edit_root)))
+    saved = edit_root / 'sample edit.jpg'
+    saved.write_bytes(b'jpeg-data')
+    listing = client.get('/api/edits')
+    assert listing.status_code == 200 and listing.json['total'] == 1
+    item = listing.json['items'][0]
+    assert item['filename'] == saved.name
+    downloaded = client.get(item['download_url'])
+    assert downloaded.status_code == 200 and downloaded.data == b'jpeg-data'
+    deleted = client.delete('/api/edits/sample%20edit.jpg', headers={'X-CSRF-Token': client.csrf})
+    assert deleted.status_code == 200
+    assert not saved.exists()

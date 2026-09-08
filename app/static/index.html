@@ -4,7 +4,7 @@
 <body>
 <section id="login" class="login" hidden><form id="loginForm" class="login-card"><div class="mark">R / C</div><p class="eyebrow">YOUR PHOTO ARCHIVE</p><h1>RAW Catalog</h1><label for="password">Catalog password</label><input id="password" type="password" autocomplete="current-password" required><button class="primary" type="submit">Open catalog</button><p id="loginError" role="alert"></p></form></section>
 <div id="application" hidden>
-<header><div class="brand"><span class="mark">R / C</span><div><strong>RAW Catalog</strong><span>Photo archive</span></div></div><div class="header-actions"><a class="button-link" href="/indexer">Indexer</a><a class="button-link" href="/statistics">Statistics</a><a class="button-link" href="/settings">Settings</a><button id="signOut">Sign out</button></div></header>
+<header><div class="brand"><span class="mark">R / C</span><div><strong>RAW Catalog</strong><span>Photo archive</span></div></div><div class="header-actions"><a class="button-link" href="/edits">Edits</a><a class="button-link" href="/indexer">Indexer</a><a class="button-link" href="/statistics">Statistics</a><a class="button-link" href="/settings">Settings</a><button id="signOut">Sign out</button></div></header>
 <main>
 <div class="title-row"><div><p class="eyebrow">LIBRARY</p><h1>All photographs<span id="count">—</span></h1></div><span class="read-only">Originals are read-only</span></div>
 <form id="filters" class="filters archive-filters">
@@ -14,6 +14,7 @@
 <div><label for="dateFrom">Captured from</label><input id="dateFrom" type="date"></div>
 <div><label for="dateTo">Captured to</label><input id="dateTo" type="date"></div>
 <div><label for="sort">Sort</label><select id="sort"><option value="indexed_desc">Newest indexed</option><option value="date_desc">Capture date — newest</option><option value="date_asc">Capture date — oldest</option></select></div>
+<label class="favorite-filter" for="favoritesOnly"><input id="favoritesOnly" type="checkbox"><span>Favorites only</span></label>
 <button type="button" id="reset">Clear filters</button>
 </form>
 <div class="results-bar"><p id="summary" aria-live="polite">Loading photographs…</p><span id="sortSummary">Newest indexed first</span></div>
@@ -23,7 +24,8 @@
 <div class="load-row"><button id="loadMore" hidden>Load more photographs</button></div>
 </main><footer>RAW Catalog <span>Camera, lens, text and capture-date filters combine</span></footer>
 </div>
-<dialog id="viewer" aria-labelledby="viewerTitle"><div class="viewer-layout"><div class="viewer-top"><div><strong id="viewerTitle"></strong><span id="viewerPosition"></span></div><div class="viewer-actions"><a id="downloadPreview" class="button-link" href="#">Preview JPEG</a><a id="downloadRaw" class="button-link" href="#">Original RAW</a><button id="editRaw">RAW Editor</button><button id="fullScreen" title="Enter full screen">Full screen</button><button id="closeViewer" aria-label="Close preview">Close ×</button></div></div><div id="previewStage" class="stage"><button id="previous" class="nav prev" aria-label="Previous photo">‹</button><img id="previewImage" alt=""><p id="previewMessage" hidden></p><button id="next" class="nav next" aria-label="Next photo">›</button></div><div class="viewer-bottom"><div><strong id="viewerCamera"></strong><span id="viewerLens"></span></div><p id="exposure"></p><details><summary>File details</summary><p id="viewerPath" class="path"></p><pre id="metadata"></pre></details></div></div></dialog>
+<dialog id="viewer" aria-labelledby="viewerTitle"><div class="viewer-layout"><div class="viewer-top"><div><strong id="viewerTitle"></strong><span id="viewerPosition"></span></div><div class="viewer-actions"><button id="viewerFavorite">☆ Favorite</button><a id="downloadPreview" class="button-link" href="#">Preview JPEG</a><a id="downloadRaw" class="button-link" href="#">Original RAW</a><button id="editRaw">RAW Editor</button><button id="fullScreen" title="Enter full screen">Full screen</button><button id="closeViewer" aria-label="Close preview">Close ×</button></div>
+</div><div id="previewStage" class="stage"><button id="previous" class="nav prev" aria-label="Previous photo">‹</button><img id="previewImage" alt=""><p id="previewMessage" hidden></p><button id="next" class="nav next" aria-label="Next photo">›</button></div><div class="viewer-bottom"><div><strong id="viewerCamera"></strong><span id="viewerLens"></span></div><p id="exposure"></p><details><summary>File details</summary><p id="viewerPath" class="path"></p><pre id="metadata"></pre></details></div></div></dialog>
 
 <dialog id="editorDialog" aria-labelledby="editorTitle"><div class="editor-layout">
 <div class="editor-top"><div><strong id="editorTitle">RAW Editor</strong><span>Non-destructive RAW processing</span></div><button id="closeEditor">Close ×</button></div>

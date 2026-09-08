@@ -1,9 +1,11 @@
 import fcntl
 import hmac
+import json
 import os
 import secrets
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote
 from flask import Flask, request, jsonify, session, send_file, abort
 from sqlalchemy import select, func, or_, text
 from werkzeug.exceptions import HTTPException
@@ -28,7 +30,15 @@ SCAN_SKIP_PREVIEWS_PREFIX = 'scan_skip_previews:'
 SCAN_SKIP_IMPORTED_PREFIX = 'scan_skip_imported:'
 SCAN_SKIP_POST_STAT_PREFIX = 'scan_skip_post_stat:'
 SCAN_PARALLELISM_PREFIX = 'scan_parallelism:'
+IMPORT_DEFAULTS_KEY = 'import_defaults_v1'
 PARALLELISM_VALUES = (1, 2, 4, 6, 8)
+DEFAULT_IMPORT_OPTIONS = {
+    'parallelism': 4,
+    'skip_previews': False,
+    'skip_imported': False,
+    'force': False,
+    'skip_post_stat': False,
+}
 
 
 def configured_root():
@@ -42,6 +52,49 @@ def selected_relative(db):
 
 def display_root(relative):
     return '/photos' + (f'/{relative}' if relative else '')
+
+
+def normalize_import_options(data, base=None):
+    if not isinstance(data, dict):
+        raise ValueError('Import options must be an object')
+    result = dict(DEFAULT_IMPORT_OPTIONS)
+    if base:
+        result.update(base)
+    if 'parallelism' in data:
+        try:
+            result['parallelism'] = int(data['parallelism'])
+        except (TypeError, ValueError) as exc:
+            raise ValueError('Parallel processing must be one of 1, 2, 4, 6 or 8') from exc
+    if result['parallelism'] not in PARALLELISM_VALUES:
+        raise ValueError('Parallel processing must be one of 1, 2, 4, 6 or 8')
+    for name in ('skip_previews', 'skip_imported', 'force', 'skip_post_stat'):
+        if name in data:
+            if not isinstance(data[name], bool):
+                raise ValueError(f'{name} must be true or false')
+            result[name] = data[name]
+    if result['force'] and result['skip_imported']:
+        raise ValueError('Force re-index and Skip already imported cannot be enabled together')
+    return result
+
+
+def configured_import_options(db):
+    setting = db.get(Setting, IMPORT_DEFAULTS_KEY)
+    if not setting or not setting.value:
+        return dict(DEFAULT_IMPORT_OPTIONS)
+    try:
+        value = json.loads(setting.value)
+        return normalize_import_options(value)
+    except (TypeError, ValueError):
+        return dict(DEFAULT_IMPORT_OPTIONS)
+
+
+def store_import_options(db, options):
+    encoded = json.dumps(normalize_import_options(options), separators=(',', ':'), sort_keys=True)
+    setting = db.get(Setting, IMPORT_DEFAULTS_KEY)
+    if setting is None:
+        db.add(Setting(key=IMPORT_DEFAULTS_KEY, value=encoded))
+    else:
+        setting.value = encoded
 
 
 def resolve_folder(relative):
@@ -140,6 +193,10 @@ def create_app():
     def settings_page():
         return app.send_static_file('settings.html')
 
+    @app.get('/edits')
+    def edits_page():
+        return app.send_static_file('edits.html')
+
     @app.get('/statistics')
     def statistics_page():
         return app.send_static_file('statistics.html')
@@ -193,6 +250,11 @@ def create_app():
         q = request.args.get('q', '').strip()[:200]
         if q:
             clauses.append(or_(Photo.filename.contains(q, autoescape=True), Photo.path.contains(q, autoescape=True)))
+        favorite = request.args.get('favorite', '').strip().lower()
+        if favorite in ('1', 'true', 'yes'):
+            clauses.append(Photo.favorite.is_(True))
+        elif favorite not in ('', '0', 'false', 'no'):
+            abort(400, 'Invalid favorite filter')
         start = date_arg('date_from')
         end = date_arg('date_to')
         if start:
@@ -246,6 +308,19 @@ def create_app():
                 abort(404, 'Photo not found')
             return jsonify(**serialize_photo(p), path=p.path, metadata=p.metadata_json,
                            preview_error=p.preview_error, size=p.size)
+
+    @app.put('/api/photos/<int:photo_id>/favorite')
+    def update_favorite(photo_id):
+        data = request.get_json(silent=True) or {}
+        value = data.get('favorite')
+        if not isinstance(value, bool):
+            abort(400, 'favorite must be true or false')
+        with Session.begin() as db:
+            photo = db.get(Photo, photo_id)
+            if not photo:
+                abort(404, 'Photo not found')
+            photo.favorite = value
+        return jsonify(ok=True, id=photo_id, favorite=value)
 
     def generate_preview_on_demand(db, photo):
         try:
@@ -376,21 +451,67 @@ def create_app():
             abort(500, f'Edited JPEG could not be saved: {exc}')
         return jsonify(filename=filename, folder=str(root), download_url=f'/media/edit/{filename}?download=1')
 
+    def resolve_edited_file(filename, create_root=False):
+        if not isinstance(filename, str) or filename != Path(filename).name or not filename.lower().endswith(('.jpg', '.jpeg')):
+            abort(404, 'Edited JPEG not found')
+        with Session() as db:
+            value = configured_edit_folder(db)
+        try:
+            root = resolve_edit_root(value, create=create_root)
+            path = root / filename
+            if path.is_symlink() or not path.is_file() or path.resolve(strict=True).parent != root:
+                abort(404, 'Edited JPEG not found')
+            return root, path
+        except (ValueError, RuntimeError, OSError):
+            abort(404, 'Edited JPEG not found')
+
     @app.get('/media/edit/<filename>')
     def edited_media(filename):
-        if filename != Path(filename).name or not filename.lower().endswith('.jpg'):
-            abort(404)
+        _, path = resolve_edited_file(filename)
+        return send_file(path, mimetype='image/jpeg', conditional=True,
+                         as_attachment=request.args.get('download') == '1', download_name=path.name)
+
+    @app.get('/api/edits')
+    def edited_gallery():
         with Session() as db:
             value = configured_edit_folder(db)
         try:
             root = resolve_edit_root(value, create=False)
-            path = root / filename
-            if path.is_symlink() or not path.is_file() or path.resolve(strict=True).parent != root:
-                abort(404, 'Edited JPEG not found')
-        except (ValueError, RuntimeError, OSError):
-            abort(404, 'Edited JPEG not found')
-        return send_file(path, mimetype='image/jpeg', conditional=True,
-                         as_attachment=request.args.get('download') == '1', download_name=filename)
+        except (ValueError, RuntimeError) as exc:
+            abort(503, f'Edited JPEG storage is unavailable: {exc}')
+        items = []
+        if root.is_dir() and not root.is_symlink():
+            try:
+                entries = list(root.iterdir())
+            except OSError as exc:
+                abort(503, f'Edited JPEG folder could not be read: {exc}')
+            for path in entries:
+                try:
+                    if path.is_symlink() or not path.is_file() or path.suffix.lower() not in ('.jpg', '.jpeg'):
+                        continue
+                    if path.resolve(strict=True).parent != root:
+                        continue
+                    stat = path.stat()
+                    items.append(dict(filename=path.name, bytes=stat.st_size, mtime=stat.st_mtime))
+                except OSError:
+                    continue
+        items.sort(key=lambda item: (item['mtime'], item['filename']), reverse=True)
+        for item in items:
+            encoded = quote(item['filename'], safe='')
+            item['modified_at'] = datetime.utcfromtimestamp(item.pop('mtime')).isoformat() + 'Z'
+            item['url'] = f'/media/edit/{encoded}'
+            item['download_url'] = f'/media/edit/{encoded}?download=1'
+        return jsonify(folder=str(root), total=len(items), items=items)
+
+    @app.delete('/api/edits/<filename>')
+    def delete_edited_photo(filename):
+        _, path = resolve_edited_file(filename)
+        try:
+            size = path.stat().st_size
+            path.unlink()
+        except OSError as exc:
+            abort(500, f'Edited JPEG could not be deleted: {exc}')
+        return jsonify(ok=True, filename=filename, bytes_removed=size)
 
     def active_scan(db):
         return db.scalar(select(Scan).where(Scan.state.in_(['queued', 'running'])).order_by(Scan.id).limit(1))
@@ -511,6 +632,24 @@ def create_app():
     def storage_info():
         return dict(cache_root=str(cache_root()), external_root=str(external_storage_root()),
                     allowed_roots=[str(cache_root()), str(external_storage_root())])
+
+    @app.get('/api/settings/import')
+    def import_settings():
+        with Session() as db:
+            return jsonify(**configured_import_options(db))
+
+    @app.put('/api/settings/import')
+    def update_import_settings():
+        data = request.get_json(silent=True) or {}
+        with Session() as db:
+            current = configured_import_options(db)
+        try:
+            options = normalize_import_options(data, current)
+        except ValueError as exc:
+            abort(400, str(exc))
+        with Session.begin() as db:
+            store_import_options(db, options)
+        return jsonify(**options)
 
     @app.get('/api/settings/thumbnails')
     def thumbnail_settings():
@@ -761,11 +900,15 @@ def create_app():
     @app.post('/api/scan')
     def start_scan():
         data = request.get_json(silent=True) or {}
-        return jsonify(scan=queue_job('scan', force=data.get('force') is True,
-                                      skip_previews=data.get('skip_previews') is True,
-                                      skip_imported=data.get('skip_imported') is True,
-                                      skip_post_stat=data.get('skip_post_stat') is True,
-                                      parallelism=data.get('parallelism', 1))), 202
+        with Session() as db:
+            current = configured_import_options(db)
+        try:
+            options = normalize_import_options(data, current)
+        except ValueError as exc:
+            abort(400, str(exc))
+        with Session.begin() as db:
+            store_import_options(db, options)
+        return jsonify(scan=queue_job('scan', **options), options=options), 202
 
     @app.post('/api/scan/cancel')
     def cancel_scan():
@@ -780,6 +923,6 @@ def create_app():
 
 def serialize_photo(p):
     return dict(id=p.id, filename=p.filename, camera=p.camera, lens=p.lens,
-                taken_at=p.taken_at.isoformat() if p.taken_at else None,
+                taken_at=p.taken_at.isoformat() if p.taken_at else None, favorite=bool(p.favorite),
                 thumbnail=f'/media/{p.id}/thumb?v={p.cache_key}' if p.cache_key else None,
                 preview=f'/media/{p.id}/preview?v={p.cache_key}' if p.cache_key else None)
