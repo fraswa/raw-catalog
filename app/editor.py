@@ -10,13 +10,17 @@ import math
 import os
 from pathlib import Path
 
-from PIL import Image, ImageStat
+from PIL import Image, ImageEnhance, ImageStat
 import rawpy
 
 DEFAULT_SETTINGS = {
     'exposure': 0.0,
+    'contrast': 0.0,
+    'highlights': 0.0,
+    'shadows': 0.0,
     'temperature': 6500,
     'tint': 0.0,
+    'saturation': 0.0,
     'black': 0,
     'white': 255,
     'denoise': 0,
@@ -41,8 +45,12 @@ def normalize_settings(data):
         raise ValueError('Editor settings must be an object')
     result = {
         'exposure': _number(data, 'exposure', float, -4.0, 4.0),
+        'contrast': _number(data, 'contrast', float, -100.0, 100.0),
+        'highlights': _number(data, 'highlights', float, -100.0, 100.0),
+        'shadows': _number(data, 'shadows', float, -100.0, 100.0),
         'temperature': _number(data, 'temperature', int, 2000, 12000),
         'tint': _number(data, 'tint', float, -100.0, 100.0),
+        'saturation': _number(data, 'saturation', float, -100.0, 100.0),
         'black': _number(data, 'black', int, 0, 80),
         'white': _number(data, 'white', int, 128, 255),
         'denoise': _number(data, 'denoise', int, 0, 100),
@@ -96,6 +104,46 @@ def _tone_image(image, settings):
             channel.append(max(0, min(255, int(round(leveled)))))
         table.extend(channel)
     return image.point(table)
+
+
+def _shadow_highlight_lut(shadows, highlights):
+    """Build a smooth RGB tone curve with anchored black/white endpoints.
+
+    Shadows peak in the lower midtones; highlights peak in the upper midtones.
+    Using the same LUT for every RGB channel keeps neutral colours neutral.
+    """
+    shadow_amount = float(shadows) / 100.0
+    highlight_amount = float(highlights) / 100.0
+    lut = []
+    for value in range(256):
+        x = value / 255.0
+        shadow_weight = 4.0 * x * (1.0 - x) ** 2
+        highlight_weight = 4.0 * x * x * (1.0 - x)
+        y = x + 0.22 * (shadow_amount * shadow_weight + highlight_amount * highlight_weight)
+        lut.append(max(0, min(255, int(round(y * 255.0)))))
+    return lut
+
+
+def _creative_image(image, settings):
+    """Apply selective tone, contrast and colour controls after RAW levels/WB."""
+    if settings['shadows'] or settings['highlights']:
+        lut = _shadow_highlight_lut(settings['shadows'], settings['highlights'])
+        result = image.point(lut * 3)
+    else:
+        result = image.copy()
+
+    contrast = float(settings['contrast'])
+    if contrast:
+        adjusted = ImageEnhance.Contrast(result).enhance(max(0.0, 1.0 + contrast / 100.0))
+        result.close()
+        result = adjusted
+
+    saturation = float(settings['saturation'])
+    if saturation:
+        adjusted = ImageEnhance.Color(result).enhance(max(0.0, 1.0 + saturation / 100.0))
+        result.close()
+        result = adjusted
+    return result
 
 
 def _denoise_passes(denoise):
@@ -168,7 +216,10 @@ def render(path, settings, max_edge=None):
         toned = _tone_image(image, settings)
     finally:
         image.close()
-    return toned
+    try:
+        return _creative_image(toned, settings)
+    finally:
+        toned.close()
 
 
 def render_preview(path, settings, max_edge=1600, quality=88):
