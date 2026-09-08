@@ -15,9 +15,9 @@ EXTENSIONS = {'.cr2', '.cr3', '.crw', '.nef', '.nrw', '.arw', '.srf', '.sr2', '.
               '.iiq', '.kdc', '.dcr', '.mos', '.mrw', '.raw', '.x3f'}
 TAGS = ['Make', 'Model', 'LensMake', 'LensModel', 'LensID', 'Lens', 'LensType', 'LensMount',
         'DateTimeOriginal', 'CreateDate', 'ISO', 'FNumber', 'ExposureTime', 'FocalLength',
-        'ImageWidth', 'ImageHeight', 'ExifImageWidth', 'ExifImageHeight', 'SensorSize',
+        'ImageWidth', 'ImageHeight', 'ExifImageWidth', 'ExifImageHeight', 'SensorSize', 'SensorType',
         'SensorWidth', 'SensorHeight', 'FocalPlaneXResolution', 'FocalPlaneYResolution',
-        'FocalPlaneResolutionUnit', 'Orientation', 'SerialNumber', 'LensSerialNumber', 'FileType']
+        'FocalPlaneResolutionUnit', 'MaxApertureValue', 'Orientation', 'SerialNumber', 'LensSerialNumber', 'FileType']
 
 _sessions = set()
 _sessions_lock = threading.Lock()

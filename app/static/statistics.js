@@ -1,192 +1,35 @@
 'use strict';
-const $ = id => document.getElementById(id);
-let csrf = '', archiveData = null, selectedCamera = '', referenceState = null, referenceHideTimer = null, referenceEditing = false;
-const nf = new Intl.NumberFormat();
-
-async function api(url, options={}) {
-  const response = await fetch(url,{...options,headers:{'Content-Type':'application/json','X-CSRF-Token':csrf,...(options.headers||{})}});
-  const result = await response.json();
-  if(!response.ok){if(response.status===401) location.href='/'; throw new Error(result.error||`Request failed (${response.status})`);} return result;
-}
-function showError(err){$('statisticsError').textContent=err.message;$('statisticsError').hidden=false;}
-function libraryUrl(filters){const p=new URLSearchParams(filters);return '/?'+p.toString();}
-function emptyBars(host){const span=document.createElement('span');span.className='read-only';span.textContent='No metadata available';host.append(span);}
-function pct(value,total){return total?Math.round(value*1000/total)/10:0;}
-function coverageText(value,total,prefix){return `${prefix}: ${nf.format(value||0)} of ${nf.format(total||0)} photos (${pct(value||0,total||0)}%)`;}
-const LIST_PREVIEW_LIMIT=20;
-function visibleRows(rows,checkboxId){return $(checkboxId).checked?(rows||[]):(rows||[]).slice(0,LIST_PREVIEW_LIMIT);}
-function syncListToggle(checkboxId,labelId,noun,count){const checkbox=$(checkboxId),label=$(labelId),expandable=count>LIST_PREVIEW_LIMIT;checkbox.disabled=!expandable;if(!expandable)checkbox.checked=false;label.textContent=expandable?`Show all ${noun} (${nf.format(count)})`:`All ${noun} shown (${nf.format(count)})`;}
-function renderCameraUsage(){if(!archiveData)return;const rows=archiveData.cameras||[];syncListToggle('showAllCameras','showAllCamerasLabel','cameras',rows.length);renderBars('cameraBars',visibleRows(rows,'showAllCameras'),{camera:true,total:archiveData.total_photos,referenceType:'camera'});}
-function renderLensUsage(){if(!archiveData)return;const detail=selectedCamera?archiveData.camera_breakdowns?.[selectedCamera]:null;const rows=detail?.lenses||archiveData.lenses||[];syncListToggle('showAllLenses','showAllLensesLabel','lenses',rows.length);renderBars('lensBars',visibleRows(rows,'showAllLenses'),{libraryParam:'lens',includeCamera:!!detail,total:detail?.total_photos||archiveData.total_photos,referenceType:'lens'});}
-
-function cancelReferenceHide(){clearTimeout(referenceHideTimer);referenceHideTimer=null;}
-function scheduleReferenceHide(){cancelReferenceHide();referenceHideTimer=setTimeout(()=>hideReference(),220);}
-function addReferenceHandlers(target,type,name){
-  target.classList.add('has-reference');
-  const mark=document.createElement('span');mark.className='reference-mark';mark.textContent='ⓘ';mark.setAttribute('aria-hidden','true');target.append(mark);
-  target.addEventListener('mouseenter',()=>showReference(target,type,name));
-  target.addEventListener('mouseleave',scheduleReferenceHide);
-  target.addEventListener('focus',()=>showReference(target,type,name));
-  target.addEventListener('blur',scheduleReferenceHide);
-}
-function fact(label,value){
-  if(value===null||value===undefined||value==='')return null;
-  const dt=document.createElement('dt');dt.textContent=label;
-  const dd=document.createElement('dd');dd.textContent=String(value);
-  return [dt,dd];
-}
-function firstValue(rows){return rows?.length?rows[0].value:null;}
-function topValues(rows,limit=2){return (rows||[]).slice(0,limit).map(x=>x.value).join(', ')||null;}
-function populateReference(type,name,detail){
-  $('referenceType').textContent=type==='camera'?'CAMERA · CATALOG REFERENCE':'LENS · CATALOG REFERENCE';$('referenceTitle').textContent=name;
-  const facts=$('referenceFacts');facts.replaceChildren();
-  const share=`${nf.format(detail.total_photos)} · ${pct(detail.total_photos,archiveData.total_photos)}% of archive`;
-  const rows=type==='camera'?[
-    fact('Maker',detail.maker||'Not reported'),fact('Usage',share),fact('Resolution',detail.megapixels||'Not reported'),
-    fact('Sensor',detail.sensor_size||'Not reported'),fact('Lens mount',topValues(detail.mounts)||'Not reported'),
-    fact('Lenses used',nf.format(detail.distinct_lenses||0)),fact('Most used lens',firstValue(detail.lenses)),fact('Active years',detail.active_years||'No capture dates')
-  ]:[
-    fact('Maker',detail.maker||'Not reported'),fact('Usage',share),fact('Lens mount',topValues(detail.mounts)||'Not reported'),
-    fact('Cameras used',nf.format(detail.distinct_cameras||0)),fact('Most used camera',firstValue(detail.cameras)),
-    fact('Common focal length',firstValue(detail.focal_lengths)),fact('Common aperture',firstValue(detail.apertures)),fact('Active years',detail.active_years||'No capture dates')
-  ];
-  for(const row of rows)if(row)facts.append(...row);
-  const overridden=detail.override_maker||detail.override_mount;
-  $('referenceFooter').textContent=overridden?'Catalog override active. It replaces indexed EXIF only in catalog statistics.':'Derived from this catalog’s indexed EXIF metadata; it is not an external product database.';
-}
-function positionReference(target){
-  const card=$('referenceCard');const rect=target.getBoundingClientRect();
-  const width=Math.min(380,window.innerWidth-24);card.style.width=`${width}px`;
-  const cardRect=card.getBoundingClientRect();let left=Math.min(rect.left,window.innerWidth-cardRect.width-12);left=Math.max(12,left);
-  let top=rect.bottom+8;if(top+cardRect.height>window.innerHeight-12)top=Math.max(12,rect.top-cardRect.height-8);
-  card.style.left=`${left}px`;card.style.top=`${top}px`;
-}
-function showReference(target,type,name){
-  if(!archiveData||referenceEditing)return;
-  const detail=type==='camera'?archiveData.camera_breakdowns?.[name]:archiveData.lens_breakdowns?.[name];if(!detail)return;
-  cancelReferenceHide();referenceState={target,type,name,detail};populateReference(type,name,detail);
-  $('referenceFacts').hidden=false;$('referenceFooter').hidden=false;$('referenceActions').hidden=false;$('referenceEditForm').hidden=true;
-  const card=$('referenceCard');card.hidden=false;positionReference(target);
-}
-function hideReference(force=false){
-  cancelReferenceHide();if(referenceEditing&&!force)return;
-  referenceEditing=false;referenceState=null;$('referenceCard').hidden=true;$('referenceEditForm').hidden=true;
-}
-function beginReferenceEdit(){
-  if(!referenceState)return;cancelReferenceHide();referenceEditing=true;
-  const detail=referenceState.detail;$('referenceFacts').hidden=true;$('referenceFooter').hidden=true;$('referenceActions').hidden=true;$('referenceEditForm').hidden=false;
-  $('referenceMaker').value=detail.override_maker||'';$('referenceMaker').placeholder=detail.maker||'Not reported';
-  $('referenceMount').value=detail.override_mount||'';$('referenceMount').placeholder=topValues(detail.mounts)||'Not reported';
-  $('referenceEditStatus').textContent='';positionReference(referenceState.target);$('referenceMaker').focus();
-}
-async function saveReference(clear=false){
-  if(!referenceState)return;const {type,name}=referenceState;
-  $('referenceEditStatus').textContent='Saving…';
-  try{
-    await api('/api/statistics/reference',{method:'PUT',body:JSON.stringify({type,name,maker:clear?'':$('referenceMaker').value.trim(),mount:clear?'':$('referenceMount').value.trim()})});
-    referenceEditing=false;hideReference(true);await load(true);
-  }catch(err){$('referenceEditStatus').textContent=err.message;showError(err);}
-}
-
-function renderBars(id, rows, options={}){
-  const host=$(id);host.replaceChildren();const max=Math.max(1,...rows.map(r=>r.count));
-  if(!rows.length){emptyBars(host);return;}
-  for(const row of rows){
-    const item=document.createElement('div');item.className='bar-item'+(options.camera&&row.value===selectedCamera?' selected':'');
-    let label;
-    if(options.camera){
-      label=document.createElement('button');label.type='button';label.className='bar-filter-link';label.onclick=()=>selectCamera(row.value);
-    } else if(options.libraryParam){
-      label=document.createElement('a');const filters={[options.libraryParam]:row.value};if(options.includeCamera&&selectedCamera)filters.camera=selectedCamera;label.href=libraryUrl(filters);label.className='bar-link';
-    } else {label=document.createElement('span');}
-    const labelText=document.createElement('span');labelText.textContent=row.value;label.append(labelText);label.title=row.value;
-    if(options.referenceType)addReferenceHandlers(label,options.referenceType,row.value);
-    const bar=document.createElement('progress');bar.max=max;bar.value=row.count;
-    const count=document.createElement('strong');
-    const percentage=options.total?Math.round(row.count*1000/options.total)/10:null;
-    count.textContent=percentage===null?nf.format(row.count):`${nf.format(row.count)} · ${percentage}%`;
-    item.append(label,bar,count);
-    if(options.camera){
-      const open=document.createElement('a');open.className='mini-filter';open.href=libraryUrl({camera:row.value});open.textContent='Open Library';open.title=`Open ${row.value} photographs in Library`;item.append(open);
-    }
-    host.append(item);
-  }
-}
-function renderTechnical(data){
-  renderBars('makerBars',data.makers||[],{total:data.total_photos});
-  renderBars('megapixelBars',data.megapixels||[],{total:data.megapixel_coverage||data.total_photos});
-  renderBars('sensorBars',data.sensor_sizes||[],{total:data.sensor_coverage||data.total_photos});
-  renderBars('mountBars',data.mounts||[],{total:data.mount_coverage||data.total_photos});
-  $('makerCoverage').textContent=coverageText(data.maker_coverage,data.total_photos,'EXIF maker coverage');
-  $('megapixelCoverage').textContent=coverageText(data.megapixel_coverage,data.total_photos,'Resolution coverage');
-  $('sensorCoverage').textContent=coverageText(data.sensor_coverage,data.total_photos,'Sensor-size coverage');
-  $('mountCoverage').textContent=coverageText(data.mount_coverage,data.total_photos,'Lens-mount coverage');
-}
-function svg(name,attrs={}){const node=document.createElementNS('http://www.w3.org/2000/svg',name);for(const[k,v]of Object.entries(attrs))node.setAttribute(k,String(v));return node;}
-function renderTrendRows(rows,names){
-  const chart=$('cameraTrend');chart.replaceChildren();$('trendLegend').replaceChildren();
-  if(!rows.length||!names.length){$('trendDates').replaceChildren();return;}
-  const left=45,right=980,top=20,bottom=285,width=right-left,height=bottom-top;
-  let max=1;for(const row of rows)for(const name of names)max=Math.max(max,row.cameras[name]||0);
-  for(let i=0;i<=4;i++){const y=top+height*i/4;chart.append(svg('line',{x1:left,y1:y,x2:right,y2:y,class:'chart-grid'}));const t=svg('text',{x:5,y:y+4,class:'chart-label'});t.textContent=nf.format(Math.round(max*(1-i/4)));chart.append(t);}
-  names.forEach((name,index)=>{const points=rows.map((row,i)=>{const x=left+(rows.length===1?width/2:width*i/(rows.length-1));const y=bottom-height*((row.cameras[name]||0)/max);return `${x},${y}`;}).join(' ');chart.append(svg('polyline',{points,class:`trend-line line-${index}`}));const legend=document.createElement('button');legend.type='button';legend.onclick=()=>selectCamera(name);legend.className=`legend-item legend-${index}`;const swatch=document.createElement('span');swatch.className='legend-swatch';const text=document.createElement('span');text.textContent=name;legend.append(swatch,text);$('trendLegend').append(legend);});
-  $('trendDates').replaceChildren();const first=document.createElement('span');first.textContent=rows[0].month;const last=document.createElement('span');last.textContent=rows[rows.length-1].month;$('trendDates').append(first,last);
-}
-function renderGlobalTrend(data){renderTrendRows(data.trend||[],data.top_camera_names||[]);}
-function renderCameraTrend(camera,detail){
-  const rows=(detail.trend||[]).map(row=>({month:row.month,cameras:{[camera]:row.count}}));
-  renderTrendRows(rows,[camera]);
-}
-function renderSummary(data, detail=null){
-  if(!detail){
-    $('summaryLabel1').textContent='Photographs';$('totalPhotos').textContent=nf.format(data.total_photos);
-    $('summaryLabel2').textContent='With capture date';$('datedPhotos').textContent=`${nf.format(data.dated_photos)} (${data.total_photos?Math.round(data.dated_photos*100/data.total_photos):0}%)`;
-    $('summaryLabel3').textContent='Cameras';$('distinctCameras').textContent=nf.format(data.distinct_cameras);
-    $('summaryLabel4').textContent='Lenses';$('distinctLenses').textContent=nf.format(data.distinct_lenses);return;
-  }
-  $('summaryLabel1').textContent='Camera photographs';$('totalPhotos').textContent=nf.format(detail.total_photos);
-  $('summaryLabel2').textContent='Archive share';$('datedPhotos').textContent=`${data.total_photos?Math.round(detail.total_photos*1000/data.total_photos)/10:0}%`;
-  $('summaryLabel3').textContent='With capture date';$('distinctCameras').textContent=`${nf.format(detail.dated_photos)} (${detail.total_photos?Math.round(detail.dated_photos*100/detail.total_photos):0}%)`;
-  $('summaryLabel4').textContent='Lenses used';$('distinctLenses').textContent=nf.format(detail.distinct_lenses);
-}
-function selectCamera(camera){
-  if(!archiveData||!archiveData.camera_breakdowns?.[camera])return;
-  selectedCamera=camera;const detail=archiveData.camera_breakdowns[camera];hideReference();
-  $('cameraScope').hidden=false;$('cameraScopeName').textContent=camera;$('cameraScopeSummary').textContent=`${nf.format(detail.total_photos)} photos · ${nf.format(detail.distinct_lenses)} lenses${detail.megapixels?' · '+detail.megapixels:''}${detail.sensor_size?' · '+detail.sensor_size:''}`;
-  $('cameraScopeLibrary').href=libraryUrl({camera});
-  $('lensHeading').textContent=`Lens usage — ${camera}`;$('focalHeading').textContent=`Focal lengths — ${camera}`;$('apertureHeading').textContent=`Apertures — ${camera}`;$('trendHeading').textContent=`${camera} usage — last 60 active months`;$('yearHeading').textContent=`${camera} photographs by year`;
-  renderSummary(archiveData,detail);
-  renderCameraUsage();
-  renderLensUsage();
-  renderBars('focalBars',detail.focal_lengths,{total:detail.total_photos});
-  renderBars('apertureBars',detail.apertures,{total:detail.total_photos});
-  renderBars('yearBars',(detail.yearly||[]).map(x=>({value:x.year,count:x.count})).reverse(),{total:detail.dated_photos});
-  renderCameraTrend(camera,detail);
-}
-function clearCamera(){
-  selectedCamera='';hideReference();$('cameraScope').hidden=true;
-  $('lensHeading').textContent='Lens usage';$('focalHeading').textContent='Most-used focal lengths';$('apertureHeading').textContent='Most-used apertures';$('trendHeading').textContent='Camera usage — last 60 active months';$('yearHeading').textContent='Photographs by year';
-  show(archiveData,false);
-}
-function show(data, resetSelection=true){
-  archiveData=data;if(resetSelection)selectedCamera='';hideReference();
-  $('statisticsLoading').hidden=true;$('statisticsContent').hidden=false;$('statisticsError').hidden=true;$('cameraScope').hidden=true;
-  renderSummary(data);$('generatedAt').textContent=`${data.cached?'Cached':'Calculated'} ${new Date(data.generated_at).toLocaleString()}`;
-  renderCameraUsage();
-  renderLensUsage();
-  renderBars('focalBars',data.focal_lengths,{total:data.total_photos});
-  renderBars('apertureBars',data.apertures,{total:data.total_photos});
-  renderTechnical(data);
-  renderBars('yearBars',(data.yearly||[]).map(x=>({value:x.year,count:x.count})).reverse(),{total:data.dated_photos});renderGlobalTrend(data);
-}
-async function load(force=false){$('statisticsLoading').hidden=false;$('statisticsContent').hidden=true;$('refreshStats').disabled=true;try{show(await api('/api/statistics'+(force?'?refresh=1':'')));}catch(err){$('statisticsLoading').hidden=true;showError(err);}finally{$('refreshStats').disabled=false;}}
-$('clearCameraScope').onclick=clearCamera;
-$('showAllCameras').onchange=renderCameraUsage;
-$('showAllLenses').onchange=renderLensUsage;
-$('refreshStats').onclick=()=>load(true);
-$('signOut').onclick=async()=>{try{await api('/api/logout',{method:'POST'});}finally{location.href='/';}};
-$('referenceCard').addEventListener('mouseenter',cancelReferenceHide);$('referenceCard').addEventListener('mouseleave',scheduleReferenceHide);
-$('editReference').onclick=beginReferenceEdit;$('referenceCancel').onclick=()=>{referenceEditing=false;if(referenceState)showReference(referenceState.target,referenceState.type,referenceState.name);};
-$('referenceClear').onclick=()=>saveReference(true);$('referenceEditForm').onsubmit=e=>{e.preventDefault();saveReference(false);};
-window.addEventListener('scroll',()=>hideReference(true),{passive:true});window.addEventListener('resize',()=>hideReference(true));
-(async()=>{try{const state=await api('/api/session');csrf=state.csrf;if(!state.authenticated){location.href='/';return;}$('statisticsApp').hidden=false;await load();}catch(err){$('statisticsApp').hidden=false;$('statisticsLoading').hidden=true;showError(err);}})();
+const $=id=>document.getElementById(id); const nf=new Intl.NumberFormat();
+let csrf='',archiveData=null,selectedCamera='',selectedMount='',referenceState=null,referenceHideTimer=null,referenceEditing=false;
+async function api(url,options={}){const r=await fetch(url,{...options,headers:{'Content-Type':'application/json','X-CSRF-Token':csrf,...(options.headers||{})}});const j=await r.json();if(!r.ok){if(r.status===401)location.href='/';throw new Error(j.error||`Request failed (${r.status})`)}return j}
+function pct(v,t){return t?Math.round(v*1000/t)/10:0} function libraryUrl(f){return '/?'+new URLSearchParams(f)} function first(rows){return rows?.[0]?.value||null} function top(rows,n=2){return (rows||[]).slice(0,n).map(x=>x.value).join(', ')||null}
+function showError(e){$('statisticsError').textContent=e.message;$('statisticsError').hidden=false}
+const LIMIT=20; function rowsVisible(rows,id){return $(id).checked?(rows||[]): (rows||[]).slice(0,LIMIT)}
+function syncToggle(id,label,noun,count){const c=$(id);c.disabled=count<=LIMIT;if(c.disabled)c.checked=false;$(label).textContent=count>LIMIT?`Show all ${noun} (${nf.format(count)})`:`All ${noun} shown (${nf.format(count)})`}
+function mountDetail(){return selectedMount?archiveData?.mount_breakdowns?.[selectedMount]:null}
+function renderBars(id,rows,opt={}){const host=$(id);host.replaceChildren();if(!rows?.length){const s=document.createElement('span');s.className='read-only';s.textContent='No metadata available';host.append(s);return}const max=Math.max(1,...rows.map(r=>r.count));for(const row of rows){const item=document.createElement('div');item.className='bar-item'+((opt.camera&&row.value===selectedCamera)||(opt.mount&&row.value===selectedMount)?' selected':'');let label;if(opt.camera){label=document.createElement('button');label.type='button';label.className='bar-filter-link';label.onclick=()=>selectCamera(row.value)}else if(opt.mount){label=document.createElement('button');label.type='button';label.className='bar-filter-link';label.onclick=()=>selectMount(row.value)}else if(opt.libraryParam){label=document.createElement('a');label.className='bar-link';const f={[opt.libraryParam]:row.value};if(selectedCamera&&opt.includeCamera)f.camera=selectedCamera;label.href=libraryUrl(f)}else label=document.createElement('span');const txt=document.createElement('span');txt.textContent=row.value;label.append(txt);label.title=row.value;if(opt.referenceType)addReferenceHandlers(label,opt.referenceType,row.value);const p=document.createElement('progress');p.max=max;p.value=row.count;const c=document.createElement('strong');c.textContent=opt.total?`${nf.format(row.count)} · ${pct(row.count,opt.total)}%`:nf.format(row.count);item.append(label,p,c);if(opt.camera&&opt.openLibrary!==false){const a=document.createElement('a');a.className='mini-filter';a.href=libraryUrl({camera:row.value});a.textContent='Open Library';item.append(a)}host.append(item)}}
+function renderCameraUsage(){const scope=mountDetail();const rows=scope?.cameras||archiveData.cameras||[];syncToggle('showAllCameras','showAllCamerasLabel','cameras',rows.length);renderBars('cameraBars',rowsVisible(rows,'showAllCameras'),{camera:true,total:scope?.total_photos||archiveData.total_photos,referenceType:'camera',openLibrary:!scope})}
+function renderLensUsage(){const camera=selectedCamera?archiveData.camera_breakdowns?.[selectedCamera]:null,scope=mountDetail();const rows=camera?.lenses||scope?.lenses||archiveData.lenses||[];syncToggle('showAllLenses','showAllLensesLabel','lenses',rows.length);renderBars('lensBars',rowsVisible(rows,'showAllLenses'),{libraryParam:'lens',includeCamera:!!camera,total:camera?.total_photos||scope?.total_photos||archiveData.total_photos,referenceType:'lens'})}
+function coverage(v,t,label){return `${label}: ${nf.format(v||0)} of ${nf.format(t||0)} photos (${pct(v||0,t||0)}%)`}
+function renderTechnical(scope=archiveData){renderBars('makerBars',scope.makers||[],{total:scope.total_photos});renderBars('megapixelBars',scope.megapixels||[],{total:scope.megapixel_coverage||scope.total_photos});renderBars('sensorBars',scope.sensor_sizes||[],{total:scope.sensor_coverage||scope.total_photos});renderBars('sensorTypeBars',scope.sensor_types||[],{total:scope.sensor_type_coverage||scope.total_photos});renderBars('mountBars',archiveData.mounts||[],{total:archiveData.mount_coverage||archiveData.total_photos,mount:true});$('makerCoverage').textContent=coverage(scope.maker_coverage,scope.total_photos,'Maker coverage');$('megapixelCoverage').textContent=coverage(scope.megapixel_coverage,scope.total_photos,'Resolution coverage');$('sensorCoverage').textContent=coverage(scope.sensor_coverage,scope.total_photos,'Sensor-size coverage');$('sensorTypeCoverage').textContent=coverage(scope.sensor_type_coverage,scope.total_photos,'Sensor-type coverage');$('mountCoverage').textContent=coverage(archiveData.mount_coverage,archiveData.total_photos,'Lens-mount coverage')}
+function fact(l,v){if(v===null||v===undefined||v==='')return null;const dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=l;dd.textContent=String(v);return[dt,dd]}
+function populateReference(type,name,d){$('referenceType').textContent=type==='camera'?'CAMERA · CATALOG REFERENCE':'LENS · CATALOG REFERENCE';$('referenceTitle').textContent=name;const host=$('referenceFacts');host.replaceChildren();const share=`${nf.format(d.total_photos)} · ${pct(d.total_photos,archiveData.total_photos)}% of archive`;const rows=type==='camera'?[fact('Maker',d.maker||'Not reported'),fact('Usage',share),fact('Resolution',d.megapixels||'Not reported'),fact('Sensor size',d.sensor_size||'Not reported'),fact('Sensor type',d.sensor_type||'Not reported'),fact('Lens mount',top(d.mounts)||'Not reported'),fact('Lenses used',nf.format(d.distinct_lenses||0)),fact('Notes',d.notes)]:[fact('Maker',d.maker||'Not reported'),fact('Usage',share),fact('Lens mount',top(d.mounts)||'Not reported'),fact('Lens type',d.lens_type||'Not reported'),fact('Focal range',d.focal_range),fact('Maximum aperture',d.max_aperture),fact('Cameras used',nf.format(d.distinct_cameras||0)),fact('Notes',d.notes)];for(const r of rows)if(r)host.append(...r);$('referenceFooter').textContent=Object.keys(d.override||{}).length?'Gear database override active. Originals are unchanged.':'Derived from indexed EXIF/inferred catalog metadata.'}
+function cancelReferenceHide(){clearTimeout(referenceHideTimer)} function scheduleReferenceHide(){cancelReferenceHide();referenceHideTimer=setTimeout(()=>hideReference(),220)}
+function addReferenceHandlers(t,type,name){t.classList.add('has-reference');const m=document.createElement('span');m.className='reference-mark';m.textContent='ⓘ';t.append(m);t.onmouseenter=()=>showReference(t,type,name);t.onmouseleave=scheduleReferenceHide;t.onfocus=()=>showReference(t,type,name);t.onblur=scheduleReferenceHide}
+function showReference(t,type,name){if(referenceEditing)return;const d=type==='camera'?archiveData.camera_breakdowns?.[name]:archiveData.lens_breakdowns?.[name];if(!d)return;cancelReferenceHide();referenceState={target:t,type,name,detail:d};populateReference(type,name,d);$('referenceFacts').hidden=false;$('referenceFooter').hidden=false;$('referenceActions').hidden=false;$('referenceEditForm').hidden=true;const c=$('referenceCard');c.hidden=false;positionReference(t)}
+function positionReference(t){const c=$('referenceCard'),r=t.getBoundingClientRect();c.style.width=`${Math.min(380,innerWidth-24)}px`;const cr=c.getBoundingClientRect();let l=Math.max(12,Math.min(r.left,innerWidth-cr.width-12)),top=r.bottom+8;if(top+cr.height>innerHeight-12)top=Math.max(12,r.top-cr.height-8);c.style.left=`${l}px`;c.style.top=`${top}px`}
+function hideReference(force=false){cancelReferenceHide();if(referenceEditing&&!force)return;referenceEditing=false;referenceState=null;$('referenceCard').hidden=true}
+function beginReferenceEdit(){if(!referenceState)return;referenceEditing=true;const d=referenceState.detail;$('referenceFacts').hidden=true;$('referenceFooter').hidden=true;$('referenceActions').hidden=true;$('referenceEditForm').hidden=false;$('referenceMaker').value=d.override?.maker||'';$('referenceMaker').placeholder=d.maker||'Not reported';$('referenceMount').value=d.override?.mount||'';$('referenceMount').placeholder=top(d.mounts)||'Not reported';positionReference(referenceState.target)}
+async function saveReference(clear=false){if(!referenceState)return;const{type,name}=referenceState;try{await api('/api/statistics/reference',{method:'PUT',body:JSON.stringify({type,name,maker:clear?'':$('referenceMaker').value.trim(),mount:clear?'':$('referenceMount').value.trim()})});referenceEditing=false;hideReference(true);await load(true)}catch(e){$('referenceEditStatus').textContent=e.message}}
+function svg(n,a={}){const x=document.createElementNS('http://www.w3.org/2000/svg',n);for(const[k,v]of Object.entries(a))x.setAttribute(k,v);return x}
+function renderTrendRows(rows,names){const chart=$('cameraTrend');chart.replaceChildren();$('trendLegend').replaceChildren();if(!rows?.length||!names?.length){$('trendDates').replaceChildren();return}const L=45,R=980,T=20,B=285,W=R-L,H=B-T;let max=1;for(const row of rows)for(const n of names)max=Math.max(max,row.cameras?.[n]||0);for(let i=0;i<=4;i++){const y=T+H*i/4;chart.append(svg('line',{x1:L,y1:y,x2:R,y2:y,class:'chart-grid'}));const t=svg('text',{x:5,y:y+4,class:'chart-label'});t.textContent=nf.format(Math.round(max*(1-i/4)));chart.append(t)}names.forEach((n,i)=>{const pts=rows.map((row,j)=>`${L+(rows.length===1?W/2:W*j/(rows.length-1))},${B-H*((row.cameras?.[n]||0)/max)}`).join(' ');chart.append(svg('polyline',{points:pts,class:`trend-line line-${i}`}));const b=document.createElement('button');b.className=`legend-item legend-${i}`;b.onclick=()=>selectCamera(n);const s=document.createElement('span');s.className='legend-swatch';const tx=document.createElement('span');tx.textContent=n;b.append(s,tx);$('trendLegend').append(b)});$('trendDates').replaceChildren();const a=document.createElement('span'),z=document.createElement('span');a.textContent=rows[0].month;z.textContent=rows.at(-1).month;$('trendDates').append(a,z)}
+function renderSummary(scope,type='global'){if(type==='global'){$('summaryLabel1').textContent='Photographs';$('totalPhotos').textContent=nf.format(scope.total_photos);$('summaryLabel2').textContent='With capture date';$('datedPhotos').textContent=`${nf.format(scope.dated_photos)} (${pct(scope.dated_photos,scope.total_photos)}%)`;$('summaryLabel3').textContent='Cameras';$('distinctCameras').textContent=nf.format(scope.distinct_cameras);$('summaryLabel4').textContent='Lenses';$('distinctLenses').textContent=nf.format(scope.distinct_lenses)}else{$('summaryLabel1').textContent=type==='camera'?'Camera photographs':'Mount photographs';$('totalPhotos').textContent=nf.format(scope.total_photos);$('summaryLabel2').textContent='Archive share';$('datedPhotos').textContent=`${pct(scope.total_photos,archiveData.total_photos)}%`;$('summaryLabel3').textContent=type==='camera'?'With capture date':'Cameras';$('distinctCameras').textContent=type==='camera'?nf.format(scope.dated_photos):nf.format(scope.distinct_cameras);$('summaryLabel4').textContent='Lenses';$('distinctLenses').textContent=nf.format(scope.distinct_lenses)}}
+function selectCamera(name){const d=archiveData.camera_breakdowns?.[name];if(!d)return;selectedMount='';$('mountFilter').value='';$('mountScope').hidden=true;selectedCamera=name;$('cameraScope').hidden=false;$('cameraScopeName').textContent=name;$('cameraScopeSummary').textContent=`${nf.format(d.total_photos)} photos · ${nf.format(d.distinct_lenses)} lenses${d.sensor_size?' · '+d.sensor_size:''}`;$('cameraScopeLibrary').href=libraryUrl({camera:name});$('lensHeading').textContent=`Lens usage — ${name}`;$('focalHeading').textContent=`Focal lengths — ${name}`;$('apertureHeading').textContent=`Apertures — ${name}`;$('trendHeading').textContent=`${name} usage — last 60 active months`;$('yearHeading').textContent=`${name} photographs by year`;renderSummary(d,'camera');renderCameraUsage();renderLensUsage();renderBars('focalBars',d.focal_lengths,{total:d.total_photos});renderBars('apertureBars',d.apertures,{total:d.total_photos});renderBars('yearBars',(d.yearly||[]).map(x=>({value:x.year,count:x.count})).reverse(),{total:d.dated_photos});renderTrendRows((d.trend||[]).map(x=>({month:x.month,cameras:{[name]:x.count}})),[name]);renderTechnical(archiveData)}
+function selectMount(name){if(!name){clearMount();return}const d=archiveData.mount_breakdowns?.[name];if(!d)return;selectedCamera='';$('cameraScope').hidden=true;selectedMount=name;$('mountFilter').value=name;$('mountScope').hidden=false;$('mountScopeName').textContent=name;$('mountScopeSummary').textContent=`${nf.format(d.total_photos)} photos · ${nf.format(d.distinct_cameras)} cameras · ${nf.format(d.distinct_lenses)} lenses`;$('lensHeading').textContent=`Lens usage — ${name}`;$('focalHeading').textContent=`Focal lengths — ${name}`;$('apertureHeading').textContent=`Apertures — ${name}`;$('trendHeading').textContent=`${name} camera usage — last 60 active months`;$('yearHeading').textContent=`${name} photographs by year`;renderSummary(d,'mount');renderCameraUsage();renderLensUsage();renderBars('focalBars',d.focal_lengths,{total:d.total_photos});renderBars('apertureBars',d.apertures,{total:d.total_photos});renderTechnical(d);renderBars('yearBars',(d.yearly||[]).map(x=>({value:x.year,count:x.count})).reverse(),{total:d.dated_photos});renderTrendRows(d.trend||[],d.top_camera_names||[])}
+function resetHeadings(){$('lensHeading').textContent='Lens usage';$('focalHeading').textContent='Most-used focal lengths';$('apertureHeading').textContent='Most-used apertures';$('trendHeading').textContent='Camera usage — last 60 active months';$('yearHeading').textContent='Photographs by year'}
+function clearCamera(){selectedCamera='';$('cameraScope').hidden=true;resetHeadings();show(archiveData,false)} function clearMount(){selectedMount='';$('mountFilter').value='';$('mountScope').hidden=true;resetHeadings();show(archiveData,false)}
+function populateMounts(){const s=$('mountFilter'),value=selectedMount;s.replaceChildren(new Option('All lens mounts',''));for(const r of archiveData.mounts||[])s.append(new Option(`${r.value} (${nf.format(r.count)})`,r.value));s.value=value}
+function show(data,reset=true){archiveData=data;if(reset){selectedCamera='';selectedMount=''}hideReference(true);$('statisticsLoading').hidden=true;$('statisticsContent').hidden=false;$('statisticsError').hidden=true;$('cameraScope').hidden=!selectedCamera;$('mountScope').hidden=!selectedMount;populateMounts();if(selectedMount){selectMount(selectedMount);return}if(selectedCamera){selectCamera(selectedCamera);return}renderSummary(data);renderCameraUsage();renderLensUsage();renderBars('focalBars',data.focal_lengths,{total:data.total_photos});renderBars('apertureBars',data.apertures,{total:data.total_photos});renderTechnical(data);renderBars('yearBars',(data.yearly||[]).map(x=>({value:x.year,count:x.count})).reverse(),{total:data.dated_photos});renderTrendRows(data.trend||[],data.top_camera_names||[]);$('generatedAt').textContent=`${data.cached?'Cached':'Calculated'} ${new Date(data.generated_at).toLocaleString()}`}
+async function load(force=false){$('statisticsLoading').hidden=false;$('refreshStats').disabled=true;try{show(await api('/api/statistics'+(force?'?refresh=1':'')),true)}catch(e){$('statisticsLoading').hidden=true;showError(e)}finally{$('refreshStats').disabled=false}}
+$('clearCameraScope').onclick=clearCamera;$('clearMountScope').onclick=clearMount;$('mountFilter').onchange=e=>selectMount(e.target.value);$('showAllCameras').onchange=renderCameraUsage;$('showAllLenses').onchange=renderLensUsage;$('refreshStats').onclick=()=>load(true);$('signOut').onclick=async()=>{try{await api('/api/logout',{method:'POST'})}finally{location.href='/'}};$('referenceCard').onmouseenter=cancelReferenceHide;$('referenceCard').onmouseleave=scheduleReferenceHide;$('editReference').onclick=beginReferenceEdit;$('referenceCancel').onclick=()=>{referenceEditing=false;if(referenceState)showReference(referenceState.target,referenceState.type,referenceState.name)};$('referenceClear').onclick=()=>saveReference(true);$('referenceEditForm').onsubmit=e=>{e.preventDefault();saveReference(false)};addEventListener('scroll',()=>hideReference(true),{passive:true});addEventListener('resize',()=>hideReference(true));
+(async()=>{try{const s=await api('/api/session');csrf=s.csrf;if(!s.authenticated){location.href='/';return}$('statisticsApp').hidden=false;await load()}catch(e){$('statisticsApp').hidden=false;$('statisticsLoading').hidden=true;showError(e)}})();

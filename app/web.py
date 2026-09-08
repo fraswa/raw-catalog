@@ -14,7 +14,7 @@ from app.imaging import cache_file, make_preview
 from app.editor import (normalize_settings as normalize_editor_settings, render_preview as render_editor_preview,
                         auto_settings as auto_editor_settings, save_jpeg as save_editor_jpeg)
 from app.statistics import build_statistics
-from app.reference import save_reference_override
+from app.reference import save_reference_override, reference_field_schema, reference_field_names
 from app.storage import (THUMB_FOLDER_KEY, PREVIEW_FOLDER_KEY, PREVIEW_EDGE_KEY,
                          PREVIEW_QUALITY_KEY, EDIT_FOLDER_KEY, PREVIEW_EDGES, PREVIEW_QUALITIES,
                          cache_root, external_storage_root, configured_thumbnail_folder,
@@ -200,6 +200,10 @@ def create_app():
     @app.get('/statistics')
     def statistics_page():
         return app.send_static_file('statistics.html')
+
+    @app.get('/catalog')
+    def catalog_page():
+        return app.send_static_file('catalog.html')
 
     @app.get('/indexer')
     def indexer_page():
@@ -880,14 +884,42 @@ def create_app():
             abort(400, 'Reference type and name are required')
         name = name.strip()[:190]
         column = Photo.camera if kind == 'camera' else Photo.lens
+        try:
+            allowed = reference_field_names(kind)
+        except ValueError as exc:
+            abort(400, str(exc))
+        changes = {key: data[key] for key in allowed if key in data}
+        if not changes:
+            abort(400, 'At least one reference field is required')
         with Session.begin() as db:
             if not db.scalar(select(func.count()).select_from(Photo).where(column == name)):
                 abort(404, f'{kind.capitalize()} not found in catalog')
             try:
-                saved = save_reference_override(db, kind, name, data.get('maker'), data.get('mount'))
+                saved = save_reference_override(db, kind, name, changes)
             except ValueError as exc:
                 abort(400, str(exc))
         return jsonify(ok=True, type=kind, name=name, override=saved)
+
+    @app.get('/api/reference-database')
+    def reference_database():
+        with Session.begin() as db:
+            stats = build_statistics(db, force=request.args.get('refresh') == '1')
+        cameras = []
+        for row in stats.get('cameras', []):
+            detail = stats.get('camera_breakdowns', {}).get(row['value'], {})
+            cameras.append({'name': row['value'], 'count': row['count'], 'override': detail.get('override', {}),
+                            'facts': {'maker': detail.get('maker'), 'mount': (detail.get('mounts') or [{}])[0].get('value'),
+                                      'sensor_size': detail.get('sensor_size'), 'sensor_type': detail.get('sensor_type'),
+                                      'megapixels': detail.get('megapixels'), 'notes': detail.get('notes')}})
+        lenses = []
+        for row in stats.get('lenses', []):
+            detail = stats.get('lens_breakdowns', {}).get(row['value'], {})
+            lenses.append({'name': row['value'], 'count': row['count'], 'override': detail.get('override', {}),
+                           'facts': {'maker': detail.get('maker'), 'mount': (detail.get('mounts') or [{}])[0].get('value'),
+                                     'lens_type': detail.get('lens_type'), 'focal_range': detail.get('focal_range'),
+                                     'max_aperture': detail.get('max_aperture'), 'notes': detail.get('notes')}})
+        return jsonify(fields=reference_field_schema(), cameras=cameras, lenses=lenses,
+                       mount_options=[row['value'] for row in stats.get('mounts', [])], generated_at=stats.get('generated_at'))
 
     @app.get('/api/scan')
     def scan_status():

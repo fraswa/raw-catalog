@@ -36,7 +36,7 @@ def client():
 def test_indexer_requests_technical_exif_fields():
     for tag in ('LensMake', 'LensMount', 'SensorSize', 'SensorWidth', 'SensorHeight',
                 'ExifImageWidth', 'ExifImageHeight', 'FocalPlaneXResolution',
-                'FocalPlaneYResolution', 'FocalPlaneResolutionUnit'):
+                'FocalPlaneYResolution', 'FocalPlaneResolutionUnit', 'SensorType', 'MaxApertureValue'):
         assert tag in TAGS
 
 
@@ -110,3 +110,39 @@ def test_statistics_exposes_complete_camera_and_lens_lists(client):
     assert len(data['lenses']) == 25
     assert data['cameras'][0]['count'] == 1
     assert data['lenses'][0]['count'] == 1
+
+
+
+def test_macos_resource_forks_are_recognized_as_garbage():
+    from app.worker import is_macos_garbage_name, MACOS_GARBAGE_DIRS
+    assert is_macos_garbage_name('._DSCF0214.dng')
+    assert is_macos_garbage_name('.DS_Store')
+    assert not is_macos_garbage_name('DSCF0214.dng')
+    assert '.AppleDouble' in MACOS_GARBAGE_DIRS
+
+
+def test_reference_database_rich_fields_and_mount_breakdown(client):
+    with Session.begin() as db:
+        db.add(Photo(path_hash='gear-r6', path='/photos/r6.cr3', filename='r6.cr3', size=1, mtime_ns=1,
+                     camera='Canon EOS R6', lens='RF50mm F1.8 STM', taken_at=datetime(2026, 2, 1),
+                     metadata_json={'Make':'Canon','LensMake':'Canon','ImageWidth':6000,'ImageHeight':4000,
+                                    'LensMount':'Canon RF','FocalLength':'50 mm','FNumber':1.8}))
+    headers={'X-CSRF-Token': client.csrf}
+    response=client.put('/api/statistics/reference', json={'type':'camera','name':'Canon EOS R6',
+        'sensor_size':'35.9 × 23.9 mm','sensor_type':'Full-frame CMOS','megapixels':'20.1 MP','mount':'Canon RF','notes':'Primary body'}, headers=headers)
+    assert response.status_code == 200
+    response=client.put('/api/statistics/reference', json={'type':'lens','name':'RF50mm F1.8 STM',
+        'mount':'Canon RF','lens_type':'Prime','focal_range':'50 mm','max_aperture':'f/1.8'}, headers=headers)
+    assert response.status_code == 200
+    data=client.get('/api/statistics?refresh=1').json
+    camera=data['camera_breakdowns']['Canon EOS R6']
+    assert camera['sensor_type']=='Full-frame CMOS'
+    assert camera['sensor_size']=='35.9 × 23.9 mm'
+    assert data['mount_breakdowns']['Canon RF']['total_photos']==1
+    assert data['mount_breakdowns']['Canon RF']['cameras'][0]['value']=='Canon EOS R6'
+    lens=data['lens_breakdowns']['RF50mm F1.8 STM']
+    assert lens['lens_type']=='Prime' and lens['focal_range']=='50 mm'
+    database=client.get('/api/reference-database').json
+    r6=next(row for row in database['cameras'] if row['name']=='Canon EOS R6')
+    assert r6['override']['sensor_type']=='Full-frame CMOS'
+    assert any(field['name']=='notes' for field in database['fields']['camera'])

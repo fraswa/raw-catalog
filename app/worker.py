@@ -27,6 +27,11 @@ PARALLELISM_VALUES = (1, 2, 4, 6, 8)
 SCAN_BATCH_SIZE = 128
 DB_WRITE_BATCH_SIZE = 16
 PROGRESS_INTERVAL = 0.5
+MACOS_GARBAGE_DIRS = {'.AppleDouble', '__MACOSX', '.Spotlight-V100', '.Trashes', '.fseventsd'}
+
+
+def is_macos_garbage_name(name):
+    return name == '.DS_Store' or name.startswith('._')
 
 
 def digest(value):
@@ -339,9 +344,12 @@ def scan(job_id):
         def scan_batches():
             batch = []
             for directory, directories, filenames in os.walk(root, followlinks=False, onerror=walk_error):
-                directories[:] = [d for d in directories if not Path(directory, d).is_symlink()]
+                directories[:] = [d for d in directories
+                                   if d not in MACOS_GARBAGE_DIRS and not Path(directory, d).is_symlink()]
                 report(directory)
                 for filename in filenames:
+                    if is_macos_garbage_name(filename):
+                        continue
                     path = Path(directory, filename)
                     if path.suffix.lower() not in EXTENSIONS or path.is_symlink():
                         continue
