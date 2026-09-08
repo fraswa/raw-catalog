@@ -1,0 +1,29 @@
+name: Finalize macOS cleanup and mount precedence
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/finalize_macos_mount.py'
+      - '.github/workflows/finalize-macos-mount.yml'
+permissions:
+  contents: write
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python tools/finalize_macos_mount.py
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q
+      - run: python -m compileall -q app
+      - name: Commit verified refinement
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app tests
+          git rm tools/finalize_macos_mount.py .github/workflows/finalize-macos-mount.yml
+          git commit -m 'Purge indexed macOS metadata and prefer lens mount facts'
+          git push
