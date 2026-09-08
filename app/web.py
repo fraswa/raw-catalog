@@ -172,6 +172,10 @@ def create_app():
         response.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' blob:; style-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'"
         if request.path.startswith('/api/'):
             response.headers['Cache-Control'] = 'no-store'
+        elif request.path.startswith('/static/') or request.path in ('/', '/settings', '/edits', '/statistics', '/catalog', '/indexer'):
+            # HTML, JS and CSS are deployed together. Force revalidation so a browser cannot
+            # combine a cached page with a newer script (or vice versa) after an upgrade.
+            response.headers['Cache-Control'] = 'no-cache, max-age=0, must-revalidate'
         if request.path.startswith('/media/'):
             response.headers['Cache-Control'] = 'private, max-age=3600'
         return response
