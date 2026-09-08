@@ -1,9 +1,13 @@
 'use strict';
 const $=id=>document.getElementById(id); const nf=new Intl.NumberFormat();
 let csrf='',archiveData=null,selectedCamera='',selectedMount='',referenceState=null,referenceHideTimer=null,referenceEditing=false;
+const bootError=$('statisticsBootError');if(bootError)bootError.hidden=true;
+function fatalStatisticsError(message){const app=$('statisticsApp');if(app)app.hidden=false;const loading=$('statisticsLoading');if(loading)loading.hidden=true;const box=$('statisticsError');if(box){box.textContent=message||'Statistics failed to start';box.hidden=false;}}
+window.addEventListener('error',event=>fatalStatisticsError(event.message||'Statistics JavaScript error'));
+window.addEventListener('unhandledrejection',event=>fatalStatisticsError(event.reason?.message||String(event.reason||'Statistics request failed')));
 async function api(url,options={}){const r=await fetch(url,{...options,headers:{'Content-Type':'application/json','X-CSRF-Token':csrf,...(options.headers||{})}});const j=await r.json();if(!r.ok){if(r.status===401)location.href='/';throw new Error(j.error||`Request failed (${r.status})`)}return j}
 function pct(v,t){return t?Math.round(v*1000/t)/10:0} function libraryUrl(f){return '/?'+new URLSearchParams(f)} function first(rows){return rows?.[0]?.value||null} function top(rows,n=2){return (rows||[]).slice(0,n).map(x=>x.value).join(', ')||null}
-function showError(e){$('statisticsError').textContent=e.message;$('statisticsError').hidden=false}
+function showError(e){fatalStatisticsError(e?.message||String(e||'Statistics error'))}
 const LIMIT=20; function rowsVisible(rows,id){return $(id).checked?(rows||[]): (rows||[]).slice(0,LIMIT)}
 function syncToggle(id,label,noun,count){const c=$(id);c.disabled=count<=LIMIT;if(c.disabled)c.checked=false;$(label).textContent=count>LIMIT?`Show all ${noun} (${nf.format(count)})`:`All ${noun} shown (${nf.format(count)})`}
 function mountDetail(){return selectedMount?archiveData?.mount_breakdowns?.[selectedMount]:null}
@@ -33,4 +37,4 @@ function show(data,reset=true){archiveData=data;if(reset){selectedCamera='';sele
 async function load(force=false){$('statisticsLoading').hidden=false;$('refreshStats').disabled=true;try{show(await api('/api/statistics'+(force?'?refresh=1':'')),true)}catch(e){$('statisticsLoading').hidden=true;showError(e)}finally{$('refreshStats').disabled=false}}
 function bind(id,prop,handler){const node=$(id);if(node)node[prop]=handler}
 bind('clearCameraScope','onclick',clearCamera);bind('clearMountScope','onclick',clearMount);bind('mountFilter','onchange',e=>selectMount(e.target.value));bind('showAllCameras','onchange',renderCameraUsage);bind('showAllLenses','onchange',renderLensUsage);bind('refreshStats','onclick',()=>load(true));bind('signOut','onclick',async()=>{try{await api('/api/logout',{method:'POST'})}finally{location.href='/'}});bind('referenceCard','onmouseenter',cancelReferenceHide);bind('referenceCard','onmouseleave',scheduleReferenceHide);bind('editReference','onclick',beginReferenceEdit);bind('referenceCancel','onclick',()=>{referenceEditing=false;if(referenceState)showReference(referenceState.target,referenceState.type,referenceState.name)});bind('referenceClear','onclick',()=>saveReference(true));bind('referenceEditForm','onsubmit',e=>{e.preventDefault();saveReference(false)});addEventListener('scroll',()=>hideReference(true),{passive:true});addEventListener('resize',()=>hideReference(true));
-(async()=>{try{const s=await api('/api/session');csrf=s.csrf;if(!s.authenticated){location.href='/';return}$('statisticsApp').hidden=false;await load()}catch(e){$('statisticsApp').hidden=false;$('statisticsLoading').hidden=true;showError(e)}})();
+(async()=>{try{const s=await api('/api/session');csrf=s.csrf;if(!s.authenticated){location.href='/';return}await load()}catch(e){showError(e)}})();
