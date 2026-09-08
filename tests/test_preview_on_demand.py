@@ -327,3 +327,68 @@ def test_saved_edits_gallery_download_and_delete(client, tmp_path, monkeypatch):
     deleted = client.delete('/api/edits/sample%20edit.jpg', headers={'X-CSRF-Token': client.csrf})
     assert deleted.status_code == 200
     assert not saved.exists()
+
+
+
+def test_metadata_prefetch_overlaps_rendering(tmp_path, monkeypatch):
+    photos = tmp_path / 'photos'
+    photos.mkdir()
+    for index in range(worker.SCAN_BATCH_SIZE + 1):
+        (photos / f'{index:03d}.cr3').write_bytes(b'raw')
+    cache = tmp_path / 'cache'
+    external = tmp_path / 'storage'
+    external.mkdir()
+    monkeypatch.setenv('CACHE_DIR', str(cache))
+    monkeypatch.setenv('EXTERNAL_STORAGE_ROOT', str(external))
+    monkeypatch.setattr(worker, 'ROOT', photos)
+    monkeypatch.setattr(worker, 'CACHE', str(cache))
+
+    render_started = threading.Event()
+    lock = threading.Lock()
+    active_renders = 0
+    metadata_calls = 0
+    overlapped = False
+
+    def fake_metadata(paths):
+        nonlocal metadata_calls, overlapped
+        metadata_calls += 1
+        if metadata_calls == 2:
+            assert render_started.wait(2), 'second metadata batch did not overlap render startup'
+            with lock:
+                overlapped = active_renders > 0
+        return {str(path): {'Make': 'Canon', 'Model': 'EOS R6', 'LensModel': 'Test lens'} for path in paths}
+
+    def fake_thumbnail(path, metadata, root, key):
+        nonlocal active_renders
+        with lock:
+            active_renders += 1
+            render_started.set()
+        try:
+            time.sleep(0.02)
+            output = cache_file(root, key, 'thumb')
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b'thumb')
+        finally:
+            with lock:
+                active_renders -= 1
+
+    monkeypatch.setattr(worker, 'metadata_batch', fake_metadata)
+    monkeypatch.setattr(worker, 'make_thumbnail', fake_thumbnail)
+
+    with Session.begin() as db:
+        job = Scan()
+        db.add(job)
+        db.flush()
+        job_id = job.id
+        db.add(Setting(key=f'scan_skip_previews:{job_id}', value='1'))
+        db.add(Setting(key=f'scan_parallelism:{job_id}', value='4'))
+
+    worker.scan(job_id)
+
+    with Session() as db:
+        job = db.get(Scan, job_id)
+        assert job.state == 'done'
+        assert job.indexed == worker.SCAN_BATCH_SIZE + 1
+        assert job.errors == 0
+    assert metadata_calls == 2
+    assert overlapped is True

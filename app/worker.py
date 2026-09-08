@@ -239,15 +239,18 @@ def scan(job_id):
                     counts['errors'] += 1
                     log.exception('Could not store indexed photo %s: %s', result['path'], exc)
 
-        def process(paths, executor):
+        def prepare_batch(paths):
+            """Read source state and EXIF for one batch without touching shared progress counters."""
             pending = []
+            skipped = 0
+            errors = []
             hashes = [digest(str(p)) for p in paths]
             with Session() as db:
                 existing = {p.path_hash: p for p in db.scalars(select(Photo).where(Photo.path_hash.in_(hashes)))}
             for path, path_hash in zip(paths, hashes):
                 old = existing.get(path_hash)
                 if old and skip_imported:
-                    counts['skipped'] += 1
+                    skipped += 1
                     continue
                 try:
                     stat = path.stat()
@@ -260,22 +263,39 @@ def scan(job_id):
                         thumb_ok = (cache_file(thumbnail_cache, old.cache_key, 'thumb').is_file() or
                                     cache_file(legacy_cache, old.cache_key, 'thumb').is_file())
                     if old and not force and old.size == stat.st_size and old.mtime_ns == stat.st_mtime_ns and preview_ok and thumb_ok:
-                        counts['skipped'] += 1
+                        skipped += 1
                     else:
                         pending.append((path, path_hash, stat))
                 except OSError as exc:
-                    counts['errors'] += 1
-                    report(path, str(exc))
-            report()
+                    errors.append((path, str(exc)))
+
             if not pending:
-                return
+                return dict(pending=[], metadata={}, skipped=skipped, errors=errors, metadata_error=None)
             try:
                 metadata = metadata_batch([p for p, _, _ in pending])
+                metadata_error = None
             except Exception as exc:
-                counts['errors'] += len(pending)
-                report(message=f'Metadata batch failed: {exc}', force=True)
+                metadata = {}
+                metadata_error = (len(pending), str(exc))
+            return dict(pending=pending, metadata=metadata, skipped=skipped,
+                        errors=errors, metadata_error=metadata_error)
+
+        def process_prepared(prepared, executor):
+            counts['skipped'] += prepared['skipped']
+            for path, message in prepared['errors']:
+                counts['errors'] += 1
+                report(path, message)
+            if prepared['metadata_error']:
+                failed, message = prepared['metadata_error']
+                counts['errors'] += failed
+                report(message=f'Metadata batch failed: {message}', force=True)
                 return
 
+            pending = prepared['pending']
+            if not pending:
+                report()
+                return
+            metadata = prepared['metadata']
             futures = {}
             for path, path_hash, stat in pending:
                 item = (path, path_hash, stat, metadata.get(str(path)))
@@ -313,8 +333,11 @@ def scan(job_id):
         if skip_post_stat:
             notes.append('fast SMB mode')
         notes.append(f'{parallelism} parallel worker' + ('s' if parallelism != 1 else ''))
+        notes.append('metadata prefetch')
         report(message='Scanning folders' + (f" ({', '.join(notes)})" if notes else ''), force=True)
-        with ThreadPoolExecutor(max_workers=parallelism, thread_name_prefix='raw-index') as executor:
+
+        def scan_batches():
+            batch = []
             for directory, directories, filenames in os.walk(root, followlinks=False, onerror=walk_error):
                 directories[:] = [d for d in directories if not Path(directory, d).is_symlink()]
                 report(directory)
@@ -323,12 +346,29 @@ def scan(job_id):
                     if path.suffix.lower() not in EXTENSIONS or path.is_symlink():
                         continue
                     counts['discovered'] += 1
-                    pending.append(path)
-                    if len(pending) >= SCAN_BATCH_SIZE:
-                        process(pending, executor)
-                        pending = []
-            if pending:
-                process(pending, executor)
+                    batch.append(path)
+                    if len(batch) >= SCAN_BATCH_SIZE:
+                        yield batch
+                        batch = []
+            if batch:
+                yield batch
+
+        # One batch is prepared ahead while the current batch is being decoded/rendered.
+        # Keeping a single metadata worker avoids multiple concurrent ExifTool metadata streams
+        # and bounds SMB read-ahead to roughly one SCAN_BATCH_SIZE batch.
+        with ThreadPoolExecutor(max_workers=parallelism, thread_name_prefix='raw-index') as executor,              ThreadPoolExecutor(max_workers=1, thread_name_prefix='raw-metadata') as metadata_executor:
+            batches = iter(scan_batches())
+            try:
+                first_batch = next(batches)
+            except StopIteration:
+                first_batch = None
+            if first_batch is not None:
+                prepared_future = metadata_executor.submit(prepare_batch, first_batch)
+                for next_batch in batches:
+                    prepared = prepared_future.result()
+                    prepared_future = metadata_executor.submit(prepare_batch, next_batch)
+                    process_prepared(prepared, executor)
+                process_prepared(prepared_future.result(), executor)
         completion = []
         if skip_previews:
             completion.append('previews will be generated when opened')
