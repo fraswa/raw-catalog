@@ -1,0 +1,89 @@
+name: Publish RAW Catalog 2.0.0
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-v2-release.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Verify release
+        run: |
+          test "$(cat VERSION)" = "2.0.0"
+          python -m pytest -q
+          python -m compileall -q app
+          node --check app/static/app.js
+          node --check app/static/editor.js
+          node --check app/static/statistics.js
+          node --check app/static/catalog.js
+
+      - name: Remove temporary workflow and finalize release commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm .github/workflows/publish-v2-release.yml
+          git add -A
+          git commit -m "Finalize RAW Catalog 2.0.0 release"
+          git push origin HEAD:main
+
+      - name: Build release ZIP
+        run: |
+          git archive --format=zip --prefix=raw-catalog-2.0.0/ -o raw-catalog-2.0.0.zip HEAD
+          sha256sum raw-catalog-2.0.0.zip > raw-catalog-2.0.0.zip.sha256
+
+      - name: Write release notes
+        run: |
+          cat > RELEASE_NOTES.md <<'EOF'
+          # RAW Catalog 2.0.0
+
+          Major feature release for large self-hosted RAW photo archives.
+
+          ## Highlights
+          - Pipelined metadata prefetch and parallel RAW rendering.
+          - Improved incremental indexing and Fast SMB operation.
+          - macOS metadata-garbage filtering and cleanup.
+          - Favorites and saved Edits gallery.
+          - Non-destructive RAW editor with exposure, contrast, highlights, shadows, temperature, tint, saturation, levels, and denoise controls.
+          - Full-resolution JPEG export with cached working previews.
+          - Gear database for camera/lens maker, mount, sensor, focal-range, aperture, and notes overrides.
+          - Expanded Statistics with sensor type, lens mount, mount filters, per-mount breakdowns, and faster unchanged-catalog cache validation.
+          - Configurable thumbnail, preview, and edited-JPEG storage.
+
+          Original RAW files remain read-only and are never modified.
+
+          ## Installation
+          See the updated README for Docker/Ubuntu installation, SMB/NAS setup, configuration, and upgrade instructions.
+
+          ## Assets
+          - `raw-catalog-2.0.0.zip` — release archive
+          - `raw-catalog-2.0.0.zip.sha256` — SHA-256 checksum
+          EOF
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v2.0.0 \
+            raw-catalog-2.0.0.zip \
+            raw-catalog-2.0.0.zip.sha256 \
+            --title "RAW Catalog 2.0.0" \
+            --notes-file RELEASE_NOTES.md \
+            --target "$(git rev-parse HEAD)" \
+            --latest
