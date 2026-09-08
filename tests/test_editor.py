@@ -41,15 +41,17 @@ def test_editor_tone_pipeline_keeps_rgb_image():
 def test_editor_creative_controls_change_target_tones_and_color():
     image = Image.new('RGB', (3, 1))
     image.putdata([(32, 32, 32), (128, 96, 64), (224, 224, 224)])
-    settings = normalize_settings({'shadows': 60, 'highlights': -60, 'contrast': 20, 'saturation': 40})
-    result = _creative_image(image, settings)
-    assert result.mode == 'RGB' and result.size == image.size
-    # Positive shadows lift the dark sample; negative highlights pull down the bright sample.
-    assert sum(result.getpixel((0, 0))) > sum(image.getpixel((0, 0)))
-    assert sum(result.getpixel((2, 0))) < sum(image.getpixel((2, 0)))
-    # Saturation/contrast also alter the coloured midtone.
-    assert result.getpixel((1, 0)) != image.getpixel((1, 0))
-    result.close()
+
+    tonal = _creative_image(image, normalize_settings({'shadows': 60, 'highlights': -60}))
+    assert tonal.mode == 'RGB' and tonal.size == image.size
+    # Positive shadows lift lower tones while negative highlights pull down upper tones.
+    assert sum(tonal.getpixel((0, 0))) > sum(image.getpixel((0, 0)))
+    assert sum(tonal.getpixel((2, 0))) < sum(image.getpixel((2, 0)))
+    tonal.close()
+
+    color = _creative_image(image, normalize_settings({'contrast': 20, 'saturation': 40}))
+    assert color.getpixel((1, 0)) != image.getpixel((1, 0))
+    color.close()
     image.close()
 
 
