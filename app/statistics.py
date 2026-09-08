@@ -5,6 +5,7 @@ from datetime import datetime
 from sqlalchemy import select, func
 
 from app.db import Photo, Setting
+from app.reference import load_reference_overrides, reference_fingerprint
 
 CACHE_KEY = 'statistics_cache_v3'
 _number = re.compile(r'[-+]?\d+(?:\.\d+)?')
@@ -136,7 +137,7 @@ def _active_years(counter):
 
 def _signature(db):
     count, latest = db.execute(select(func.count(Photo.id), func.max(Photo.indexed_at))).one()
-    return f'{count}:{latest.isoformat() if latest else ""}'
+    return f'{count}:{latest.isoformat() if latest else ""}:{reference_fingerprint(db)}'
 
 
 def build_statistics(db, force=False):
@@ -163,6 +164,9 @@ def build_statistics(db, force=False):
     lens_mounts = defaultdict(Counter); lens_maker_counts = defaultdict(Counter)
     camera_dated = Counter(); lens_dated = Counter()
     dated = total = 0
+    overrides = load_reference_overrides(db)
+    camera_overrides = overrides.get('camera', {})
+    lens_overrides = overrides.get('lens', {})
 
     statement = select(Photo.camera, Photo.lens, Photo.taken_at, Photo.metadata_json).execution_options(yield_per=2000)
     for camera, lens, taken_at, metadata in db.execute(statement):
@@ -171,10 +175,12 @@ def build_statistics(db, force=False):
         cameras[camera] += 1; lenses[lens] += 1; camera_lenses[camera][lens] += 1; lens_cameras[lens][camera] += 1
         metadata = metadata or {}
 
-        maker = _clean_text(metadata.get('Make'))
+        camera_override = camera_overrides.get(camera, {})
+        lens_override = lens_overrides.get(lens, {})
+        maker = _clean_text(camera_override.get('maker')) or _clean_text(metadata.get('Make'))
         if maker:
             makers[maker] += 1; camera_makers[camera][maker] += 1
-        lens_maker = _clean_text(metadata.get('LensMake'))
+        lens_maker = _clean_text(lens_override.get('maker')) or _clean_text(metadata.get('LensMake'))
         if lens_maker:
             lens_makers[lens_maker] += 1; lens_maker_counts[lens][lens_maker] += 1
 
@@ -184,7 +190,8 @@ def build_statistics(db, force=False):
         sensor = _sensor_size(metadata)
         if sensor:
             sensor_sizes[sensor] += 1; camera_sensors[camera][sensor] += 1
-        mount = _lens_mount(metadata, camera, lens)
+        mount = (_clean_text(lens_override.get('mount')) or _clean_text(camera_override.get('mount'))
+                 or _lens_mount(metadata, camera, lens))
         if mount:
             mounts[mount] += 1; camera_mounts[camera][mount] += 1; lens_mounts[lens][mount] += 1
 
@@ -214,11 +221,14 @@ def build_statistics(db, force=False):
 
     camera_breakdowns = {}
     for camera in cameras:
+        override = camera_overrides.get(camera, {})
         camera_breakdowns[camera] = {
             'total_photos': cameras[camera],
             'dated_photos': camera_dated[camera],
             'distinct_lenses': len(camera_lenses[camera]),
             'maker': _first(camera_makers[camera]),
+            'override_maker': override.get('maker'),
+            'override_mount': override.get('mount'),
             'megapixels': _first(camera_megapixels[camera]),
             'sensor_size': _first(camera_sensors[camera]),
             'mounts': _top(camera_mounts[camera], 5),
@@ -234,11 +244,14 @@ def build_statistics(db, force=False):
 
     lens_breakdowns = {}
     for lens in lenses:
+        override = lens_overrides.get(lens, {})
         lens_breakdowns[lens] = {
             'total_photos': lenses[lens],
             'dated_photos': lens_dated[lens],
             'distinct_cameras': len(lens_cameras[lens]),
             'maker': _first(lens_maker_counts[lens]),
+            'override_maker': override.get('maker'),
+            'override_mount': override.get('mount'),
             'mounts': _top(lens_mounts[lens], 5),
             'active_years': _active_years(lens_years[lens]),
             'cameras': _top(lens_cameras[lens]),

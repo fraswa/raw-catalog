@@ -247,3 +247,22 @@ def test_image_orientation_and_legacy_media_fallback(client,tmp_path,monkeypatch
         p=Photo(path_hash='preview',path='/photos/test.cr3',filename='test.cr3',size=4,mtime_ns=1,cache_key=key);db.add(p);db.flush();pid=p.id
     response=client.get(f'/media/{pid}/preview');assert response.status_code==200 and response.mimetype=='image/jpeg'
     assert response.headers['Cache-Control'].startswith('private') and client.get(f'/media/{pid}/original').status_code==404
+
+
+def test_reference_overrides_are_saved_and_used(client):
+    seed_dates()
+    h = headers(client)
+    camera = client.put('/api/statistics/reference', json={'type':'camera','name':'Canon EOS R6','maker':'Canon corrected','mount':'Canon RF'}, headers=h)
+    assert camera.status_code == 200
+    lens = client.put('/api/statistics/reference', json={'type':'lens','name':'EF 50mm f/1.2L','maker':'Canon Lens','mount':'Canon EF'}, headers=h)
+    assert lens.status_code == 200
+    stats = client.get('/api/statistics').json
+    detail = stats['camera_breakdowns']['Canon EOS R6']
+    assert detail['maker'] == 'Canon corrected' and detail['override_mount'] == 'Canon RF'
+    lens_detail = stats['lens_breakdowns']['EF 50mm f/1.2L']
+    assert lens_detail['maker'] == 'Canon Lens' and lens_detail['mounts'][0]['value'] == 'Canon EF'
+    with Session() as db:
+        value = db.get(Setting, 'catalog_reference_overrides_v1').value
+        assert 'Canon corrected' in value and 'Canon Lens' in value
+    cleared = client.put('/api/statistics/reference', json={'type':'lens','name':'EF 50mm f/1.2L','maker':'','mount':''}, headers=h)
+    assert cleared.status_code == 200 and cleared.json['override'] == {}

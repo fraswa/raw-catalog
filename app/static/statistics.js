@@ -1,6 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id);
-let csrf = '', archiveData = null, selectedCamera = '';
+let csrf = '', archiveData = null, selectedCamera = '', referenceState = null, referenceHideTimer = null, referenceEditing = false;
 const nf = new Intl.NumberFormat();
 
 async function api(url, options={}) {
@@ -14,13 +14,15 @@ function emptyBars(host){const span=document.createElement('span');span.classNam
 function pct(value,total){return total?Math.round(value*1000/total)/10:0;}
 function coverageText(value,total,prefix){return `${prefix}: ${nf.format(value||0)} of ${nf.format(total||0)} photos (${pct(value||0,total||0)}%)`;}
 
+function cancelReferenceHide(){clearTimeout(referenceHideTimer);referenceHideTimer=null;}
+function scheduleReferenceHide(){cancelReferenceHide();referenceHideTimer=setTimeout(()=>hideReference(),220);}
 function addReferenceHandlers(target,type,name){
   target.classList.add('has-reference');
   const mark=document.createElement('span');mark.className='reference-mark';mark.textContent='ⓘ';mark.setAttribute('aria-hidden','true');target.append(mark);
   target.addEventListener('mouseenter',()=>showReference(target,type,name));
-  target.addEventListener('mouseleave',hideReference);
+  target.addEventListener('mouseleave',scheduleReferenceHide);
   target.addEventListener('focus',()=>showReference(target,type,name));
-  target.addEventListener('blur',hideReference);
+  target.addEventListener('blur',scheduleReferenceHide);
 }
 function fact(label,value){
   if(value===null||value===undefined||value==='')return null;
@@ -30,43 +32,56 @@ function fact(label,value){
 }
 function firstValue(rows){return rows?.length?rows[0].value:null;}
 function topValues(rows,limit=2){return (rows||[]).slice(0,limit).map(x=>x.value).join(', ')||null;}
-function showReference(target,type,name){
-  if(!archiveData)return;
-  const detail=type==='camera'?archiveData.camera_breakdowns?.[name]:archiveData.lens_breakdowns?.[name];
-  if(!detail)return;
-  const card=$('referenceCard');$('referenceType').textContent=type==='camera'?'CAMERA · CATALOG REFERENCE':'LENS · CATALOG REFERENCE';$('referenceTitle').textContent=name;
+function populateReference(type,name,detail){
+  $('referenceType').textContent=type==='camera'?'CAMERA · CATALOG REFERENCE':'LENS · CATALOG REFERENCE';$('referenceTitle').textContent=name;
   const facts=$('referenceFacts');facts.replaceChildren();
   const share=`${nf.format(detail.total_photos)} · ${pct(detail.total_photos,archiveData.total_photos)}% of archive`;
   const rows=type==='camera'?[
-    fact('Maker',detail.maker||'Not reported'),
-    fact('Usage',share),
-    fact('Resolution',detail.megapixels||'Not reported'),
-    fact('Sensor',detail.sensor_size||'Not reported'),
-    fact('Lens mount',topValues(detail.mounts)||'Not reported'),
-    fact('Lenses used',nf.format(detail.distinct_lenses||0)),
-    fact('Most used lens',firstValue(detail.lenses)),
-    fact('Active years',detail.active_years||'No capture dates')
+    fact('Maker',detail.maker||'Not reported'),fact('Usage',share),fact('Resolution',detail.megapixels||'Not reported'),
+    fact('Sensor',detail.sensor_size||'Not reported'),fact('Lens mount',topValues(detail.mounts)||'Not reported'),
+    fact('Lenses used',nf.format(detail.distinct_lenses||0)),fact('Most used lens',firstValue(detail.lenses)),fact('Active years',detail.active_years||'No capture dates')
   ]:[
-    fact('Maker',detail.maker||'Not reported'),
-    fact('Usage',share),
-    fact('Lens mount',topValues(detail.mounts)||'Not reported'),
-    fact('Cameras used',nf.format(detail.distinct_cameras||0)),
-    fact('Most used camera',firstValue(detail.cameras)),
-    fact('Common focal length',firstValue(detail.focal_lengths)),
-    fact('Common aperture',firstValue(detail.apertures)),
-    fact('Active years',detail.active_years||'No capture dates')
+    fact('Maker',detail.maker||'Not reported'),fact('Usage',share),fact('Lens mount',topValues(detail.mounts)||'Not reported'),
+    fact('Cameras used',nf.format(detail.distinct_cameras||0)),fact('Most used camera',firstValue(detail.cameras)),
+    fact('Common focal length',firstValue(detail.focal_lengths)),fact('Common aperture',firstValue(detail.apertures)),fact('Active years',detail.active_years||'No capture dates')
   ];
   for(const row of rows)if(row)facts.append(...row);
-  $('referenceFooter').textContent='Derived from this catalog’s indexed EXIF metadata; it is not an external product database.';
-  card.hidden=false;
-  const rect=target.getBoundingClientRect();
-  const width=Math.min(360,window.innerWidth-24);card.style.width=`${width}px`;
-  const cardRect=card.getBoundingClientRect();
-  let left=Math.min(rect.left,window.innerWidth-cardRect.width-12);left=Math.max(12,left);
+  const overridden=detail.override_maker||detail.override_mount;
+  $('referenceFooter').textContent=overridden?'Catalog override active. It replaces indexed EXIF only in catalog statistics.':'Derived from this catalog’s indexed EXIF metadata; it is not an external product database.';
+}
+function positionReference(target){
+  const card=$('referenceCard');const rect=target.getBoundingClientRect();
+  const width=Math.min(380,window.innerWidth-24);card.style.width=`${width}px`;
+  const cardRect=card.getBoundingClientRect();let left=Math.min(rect.left,window.innerWidth-cardRect.width-12);left=Math.max(12,left);
   let top=rect.bottom+8;if(top+cardRect.height>window.innerHeight-12)top=Math.max(12,rect.top-cardRect.height-8);
   card.style.left=`${left}px`;card.style.top=`${top}px`;
 }
-function hideReference(){$('referenceCard').hidden=true;}
+function showReference(target,type,name){
+  if(!archiveData||referenceEditing)return;
+  const detail=type==='camera'?archiveData.camera_breakdowns?.[name]:archiveData.lens_breakdowns?.[name];if(!detail)return;
+  cancelReferenceHide();referenceState={target,type,name,detail};populateReference(type,name,detail);
+  $('referenceFacts').hidden=false;$('referenceFooter').hidden=false;$('referenceActions').hidden=false;$('referenceEditForm').hidden=true;
+  const card=$('referenceCard');card.hidden=false;positionReference(target);
+}
+function hideReference(force=false){
+  cancelReferenceHide();if(referenceEditing&&!force)return;
+  referenceEditing=false;referenceState=null;$('referenceCard').hidden=true;$('referenceEditForm').hidden=true;
+}
+function beginReferenceEdit(){
+  if(!referenceState)return;cancelReferenceHide();referenceEditing=true;
+  const detail=referenceState.detail;$('referenceFacts').hidden=true;$('referenceFooter').hidden=true;$('referenceActions').hidden=true;$('referenceEditForm').hidden=false;
+  $('referenceMaker').value=detail.override_maker||'';$('referenceMaker').placeholder=detail.maker||'Not reported';
+  $('referenceMount').value=detail.override_mount||'';$('referenceMount').placeholder=topValues(detail.mounts)||'Not reported';
+  $('referenceEditStatus').textContent='';positionReference(referenceState.target);$('referenceMaker').focus();
+}
+async function saveReference(clear=false){
+  if(!referenceState)return;const {type,name}=referenceState;
+  $('referenceEditStatus').textContent='Saving…';
+  try{
+    await api('/api/statistics/reference',{method:'PUT',body:JSON.stringify({type,name,maker:clear?'':$('referenceMaker').value.trim(),mount:clear?'':$('referenceMount').value.trim()})});
+    referenceEditing=false;hideReference(true);await load(true);
+  }catch(err){$('referenceEditStatus').textContent=err.message;showError(err);}
+}
 
 function renderBars(id, rows, options={}){
   const host=$(id);host.replaceChildren();const max=Math.max(1,...rows.map(r=>r.count));
@@ -163,5 +178,8 @@ async function load(force=false){$('statisticsLoading').hidden=false;$('statisti
 $('clearCameraScope').onclick=clearCamera;
 $('refreshStats').onclick=()=>load(true);
 $('signOut').onclick=async()=>{try{await api('/api/logout',{method:'POST'});}finally{location.href='/';}};
-window.addEventListener('scroll',hideReference,{passive:true});window.addEventListener('resize',hideReference);
+$('referenceCard').addEventListener('mouseenter',cancelReferenceHide);$('referenceCard').addEventListener('mouseleave',scheduleReferenceHide);
+$('editReference').onclick=beginReferenceEdit;$('referenceCancel').onclick=()=>{referenceEditing=false;if(referenceState)showReference(referenceState.target,referenceState.type,referenceState.name);};
+$('referenceClear').onclick=()=>saveReference(true);$('referenceEditForm').onsubmit=e=>{e.preventDefault();saveReference(false);};
+window.addEventListener('scroll',()=>hideReference(true),{passive:true});window.addEventListener('resize',()=>hideReference(true));
 (async()=>{try{const state=await api('/api/session');csrf=state.csrf;if(!state.authenticated){location.href='/';return;}$('statisticsApp').hidden=false;await load();}catch(err){$('statisticsApp').hidden=false;$('statisticsLoading').hidden=true;showError(err);}})();

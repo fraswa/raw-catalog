@@ -12,6 +12,7 @@ from app.imaging import cache_file, make_preview
 from app.editor import (normalize_settings as normalize_editor_settings, render_preview as render_editor_preview,
                         auto_settings as auto_editor_settings, save_jpeg as save_editor_jpeg)
 from app.statistics import build_statistics
+from app.reference import save_reference_override
 from app.storage import (THUMB_FOLDER_KEY, PREVIEW_FOLDER_KEY, PREVIEW_EDGE_KEY,
                          PREVIEW_QUALITY_KEY, EDIT_FOLDER_KEY, PREVIEW_EDGES, PREVIEW_QUALITIES,
                          cache_root, external_storage_root, configured_thumbnail_folder,
@@ -730,6 +731,24 @@ def create_app():
         force = request.args.get('refresh') == '1'
         with Session.begin() as db:
             return jsonify(build_statistics(db, force=force))
+
+    @app.put('/api/statistics/reference')
+    def update_statistics_reference():
+        data = request.get_json(silent=True) or {}
+        kind = data.get('type')
+        name = data.get('name')
+        if kind not in ('camera', 'lens') or not isinstance(name, str) or not name.strip():
+            abort(400, 'Reference type and name are required')
+        name = name.strip()[:190]
+        column = Photo.camera if kind == 'camera' else Photo.lens
+        with Session.begin() as db:
+            if not db.scalar(select(func.count()).select_from(Photo).where(column == name)):
+                abort(404, f'{kind.capitalize()} not found in catalog')
+            try:
+                saved = save_reference_override(db, kind, name, data.get('maker'), data.get('mount'))
+            except ValueError as exc:
+                abort(400, str(exc))
+        return jsonify(ok=True, type=kind, name=name, override=saved)
 
     @app.get('/api/scan')
     def scan_status():

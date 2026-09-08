@@ -3,8 +3,11 @@
 All operations read the original and write a new JPEG to the configured edits folder.
 Original RAW files are never modified.
 """
+import fcntl
+import hashlib
 import io
 import math
+import os
 from pathlib import Path
 
 from PIL import Image, ImageStat
@@ -95,8 +98,12 @@ def _tone_image(image, settings):
     return image.point(table)
 
 
+def _denoise_passes(denoise):
+    return min(3, max(0, int(round(float(denoise) / 34.0))))
+
+
 def _decode_raw(path, denoise=0, half_size=False):
-    passes = min(3, max(0, int(round(denoise / 34.0))))
+    passes = _denoise_passes(denoise)
     with rawpy.imread(str(path)) as raw:
         pixels = raw.postprocess(
             use_camera_wb=True,
@@ -108,15 +115,59 @@ def _decode_raw(path, denoise=0, half_size=False):
     return Image.fromarray(pixels, 'RGB')
 
 
+def _editor_work_root():
+    root = Path(os.environ.get('CACHE_DIR', '/data/cache')) / 'editor-work'
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _preview_cache_file(path, denoise, max_edge):
+    source = Path(path)
+    stat = source.stat()
+    signature = f'{source}:{stat.st_size}:{stat.st_mtime_ns}:{_denoise_passes(denoise)}:{int(max_edge)}'
+    key = hashlib.sha256(signature.encode('utf-8', errors='surrogateescape')).hexdigest()
+    return _editor_work_root() / key[:2] / f'{key}.jpg'
+
+
+def _open_cached_rgb(path):
+    with Image.open(path) as image:
+        return image.convert('RGB')
+
+
+def _load_cached_preview_base(path, denoise=0, max_edge=1600):
+    """Decode the RAW once per source/denoise bucket and reuse a local working JPEG."""
+    target = _preview_cache_file(path, denoise, max_edge)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_file():
+        return _open_cached_rgb(target)
+
+    lock_path = target.with_suffix('.lock')
+    with open(lock_path, 'a+b') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not target.is_file():
+            image = _decode_raw(path, denoise, half_size=True)
+            temp = target.with_suffix(f'.{os.getpid()}.tmp')
+            try:
+                image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+                image.save(temp, 'JPEG', quality=92, optimize=False)
+                os.replace(temp, target)
+            finally:
+                image.close()
+                try:
+                    temp.unlink()
+                except FileNotFoundError:
+                    pass
+    return _open_cached_rgb(target)
+
+
 def render(path, settings, max_edge=None):
     settings = normalize_settings(settings)
-    image = _decode_raw(path, settings['denoise'], half_size=bool(max_edge))
+    image = (_load_cached_preview_base(path, settings['denoise'], max_edge)
+             if max_edge else _decode_raw(path, settings['denoise'], half_size=False))
     try:
         toned = _tone_image(image, settings)
     finally:
         image.close()
-    if max_edge:
-        toned.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
     return toned
 
 
@@ -162,7 +213,7 @@ def _percentile(histogram, fraction):
 def auto_settings(path, metadata=None):
     """Return conservative automatic exposure/levels settings from a quick RAW decode."""
     base = dict(DEFAULT_SETTINGS)
-    image = _decode_raw(path, denoise=0, half_size=True)
+    image = _load_cached_preview_base(path, denoise=0, max_edge=1600)
     try:
         image.thumbnail((800, 800), Image.Resampling.BILINEAR)
         luminance = image.convert('L')

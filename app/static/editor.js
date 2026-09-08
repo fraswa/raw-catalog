@@ -3,7 +3,7 @@
   const $ = id => document.getElementById(id);
   const defaults = {exposure:0,temperature:6500,tint:0,black:0,white:255,denoise:0};
   const controls = ['exposure','temperature','tint','black','white','denoise'];
-  let photo = null, csrf = '', timer = null, objectUrl = '', revision = 0;
+  let photo = null, csrf = '', timer = null, objectUrl = '', revision = 0, previewController = null;
 
   function settings() {
     return {
@@ -45,23 +45,36 @@
   async function renderPreview() {
     if(!photo||!$('editorDialog').open)return;
     const current=++revision;
-    $('editorStatus').textContent='Rendering RAW preview…';
-    $('editorPreviewMessage').hidden=false;$('editorPreviewMessage').textContent='Rendering preview…';
+    if(previewController)previewController.abort();
+    previewController=new AbortController();
+    const hasPreview=!$('editorImage').hidden&&!!objectUrl;
+    $('editorStatus').textContent=hasPreview?'Updating cached working preview…':'Preparing RAW working preview…';
+    $('editorPreviewMessage').hidden=hasPreview;
+    if(!hasPreview)$('editorPreviewMessage').textContent='Preparing RAW preview…';
     try {
-      const response=await fetch(`/api/photos/${photo.id}/editor/preview`,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(settings())});
+      const response=await fetch(`/api/photos/${photo.id}/editor/preview`,{
+        method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},
+        body:JSON.stringify(settings()),signal:previewController.signal
+      });
       if(!response.ok)throw new Error(await responseError(response));
       const blob=await response.blob();
       if(current!==revision)return;
-      releasePreview();objectUrl=URL.createObjectURL(blob);
-      $('editorImage').src=objectUrl;$('editorImage').hidden=false;$('editorPreviewMessage').hidden=true;
-      $('editorStatus').textContent='Preview rendered. Changes are non-destructive until Save JPEG.';
+      const nextUrl=URL.createObjectURL(blob);
+      await new Promise((resolve,reject)=>{
+        const probe=new Image();probe.onload=resolve;probe.onerror=()=>reject(new Error('Rendered preview could not be decoded'));probe.src=nextUrl;
+      });
+      if(current!==revision){URL.revokeObjectURL(nextUrl);return;}
+      const previous=objectUrl;objectUrl=nextUrl;
+      $('editorImage').src=nextUrl;$('editorImage').hidden=false;$('editorPreviewMessage').hidden=true;
+      if(previous)URL.revokeObjectURL(previous);
+      $('editorStatus').textContent='Working preview updated. RAW decode is reused until denoise requires a new base.';
     } catch(err) {
-      if(current!==revision)return;
-      $('editorImage').hidden=true;$('editorPreviewMessage').hidden=false;$('editorPreviewMessage').textContent=err.message;
-      $('editorStatus').textContent='RAW preview failed.';
+      if(err.name==='AbortError'||current!==revision)return;
+      if(!hasPreview){$('editorImage').hidden=true;$('editorPreviewMessage').hidden=false;$('editorPreviewMessage').textContent=err.message;}
+      $('editorStatus').textContent=`RAW preview failed: ${err.message}`;
     }
   }
-  function schedulePreview(delay=450) {
+  function schedulePreview(delay=180) {
     displayValues();clearTimeout(timer);timer=setTimeout(renderPreview,delay);
     $('downloadEdit').hidden=true;
   }
@@ -85,7 +98,7 @@
     finally {$('saveEdit').disabled=false;}
   }
   function open(selectedPhoto, token) {
-    photo=selectedPhoto;csrf=token;revision++;clearTimeout(timer);releasePreview();
+    photo=selectedPhoto;csrf=token;revision++;clearTimeout(timer);if(previewController)previewController.abort();releasePreview();
     $('editorTitle').textContent=`RAW Editor — ${photo.filename}`;
     $('editorImage').removeAttribute('src');$('editorImage').hidden=true;$('editorPreviewMessage').hidden=false;
     $('editorPreviewMessage').textContent='Preparing RAW preview…';$('editorStatus').textContent='';$('downloadEdit').hidden=true;
@@ -104,6 +117,6 @@
   $('resetEdit').onclick=()=>{applySettings(defaults);schedulePreview(50);};
   $('saveEdit').onclick=save;
   $('closeEditor').onclick=close;
-  $('editorDialog').addEventListener('close',()=>{revision++;clearTimeout(timer);releasePreview();photo=null;});
+  $('editorDialog').addEventListener('close',()=>{revision++;clearTimeout(timer);if(previewController)previewController.abort();previewController=null;releasePreview();photo=null;});
   window.rawCatalogEditor={open,close};
 })();

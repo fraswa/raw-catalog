@@ -31,7 +31,7 @@
 <section class="stats-card wide-card"><div class="card-heading"><p class="eyebrow">YEARS</p><h2 id="yearHeading">Photographs by year</h2></div><div id="yearBars" class="bar-list years"></div></section>
 </div>
 </main>
-<aside id="referenceCard" class="reference-card" role="tooltip" hidden><div class="reference-type" id="referenceType"></div><h3 id="referenceTitle"></h3><dl id="referenceFacts"></dl><div id="referenceFooter" class="reference-footer"></div></aside>
+<aside id="referenceCard" class="reference-card" role="dialog" aria-labelledby="referenceTitle" hidden><div class="reference-type" id="referenceType"></div><h3 id="referenceTitle"></h3><dl id="referenceFacts"></dl><div id="referenceFooter" class="reference-footer"></div><div id="referenceActions" class="reference-actions"><button id="editReference" type="button">Edit catalog facts</button></div><form id="referenceEditForm" class="reference-edit" hidden><label for="referenceMaker">Maker</label><input id="referenceMaker" type="text" maxlength="190" autocomplete="off"><label for="referenceMount">Lens mount</label><input id="referenceMount" type="text" maxlength="190" autocomplete="off"><p class="reference-help">Blank fields use indexed EXIF/inferred values. Saved overrides apply to statistics without changing the RAW metadata.</p><div class="reference-edit-actions"><button class="primary" type="submit">Save</button><button id="referenceClear" type="button">Use indexed EXIF</button><button id="referenceCancel" type="button">Cancel</button></div><p id="referenceEditStatus" class="reference-edit-status"></p></form></aside>
 <footer>RAW Catalog <span>Camera drill-down, technical metadata and Library links are available throughout the statistics view</span></footer>
 </div>
 </body></html>
