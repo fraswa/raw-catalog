@@ -9,15 +9,17 @@ from sqlalchemy import select, func, or_, text
 from werkzeug.exceptions import HTTPException
 from app.db import Session, Photo, Scan, Setting, engine
 from app.imaging import cache_file, make_preview
+from app.editor import (normalize_settings as normalize_editor_settings, render_preview as render_editor_preview,
+                        auto_settings as auto_editor_settings, save_jpeg as save_editor_jpeg)
 from app.statistics import build_statistics
 from app.storage import (THUMB_FOLDER_KEY, PREVIEW_FOLDER_KEY, PREVIEW_EDGE_KEY,
-                         PREVIEW_QUALITY_KEY, PREVIEW_EDGES, PREVIEW_QUALITIES,
+                         PREVIEW_QUALITY_KEY, EDIT_FOLDER_KEY, PREVIEW_EDGES, PREVIEW_QUALITIES,
                          cache_root, external_storage_root, configured_thumbnail_folder,
-                         configured_preview_folder, configured_preview_edge,
+                         configured_preview_folder, configured_edit_folder, configured_preview_edge,
                          configured_preview_quality, normalize_thumbnail_folder,
-                         normalize_preview_folder, normalize_preview_edge,
+                         normalize_preview_folder, normalize_edit_folder, normalize_preview_edge,
                          normalize_preview_quality, resolve_thumbnail_root,
-                         resolve_preview_root)
+                         resolve_preview_root, resolve_edit_root)
 
 SELECTED_FOLDER_KEY = 'selected_photo_folder'
 SCAN_MODE_PREFIX = 'scan_mode:'
@@ -274,11 +276,20 @@ def create_app():
 
     @app.get('/media/<int:photo_id>/<kind>')
     def media(photo_id, kind):
-        if kind not in ('thumb', 'preview'):
+        if kind not in ('thumb', 'preview', 'original'):
             abort(404)
         with Session() as db:
             p = db.get(Photo, photo_id)
-            if not p or not p.cache_key:
+            if not p:
+                abort(404, 'Photo not found')
+            if kind == 'original':
+                try:
+                    source = resolve_original(p.path)
+                except RuntimeError as exc:
+                    abort(404, str(exc))
+                return send_file(source, mimetype='application/octet-stream', conditional=True,
+                                 as_attachment=True, download_name=source.name)
+            if not p.cache_key:
                 abort(404, 'Generated media unavailable')
             path = None
             try:
@@ -300,7 +311,85 @@ def create_app():
                 path = generate_preview_on_demand(db, p)
             if path is None:
                 abort(404, 'Thumbnail missing; rebuild thumbnails from Settings')
-            return send_file(path, mimetype='image/jpeg', conditional=True)
+            download = request.args.get('download') == '1'
+            name = f'{Path(p.filename).stem}-{kind}.jpg' if download else None
+            return send_file(path, mimetype='image/jpeg', conditional=True,
+                             as_attachment=download, download_name=name)
+
+    def editor_source(photo_id):
+        with Session() as db:
+            photo = db.get(Photo, photo_id)
+            if not photo:
+                abort(404, 'Photo not found')
+            metadata = photo.metadata_json or {}
+            filename = photo.filename
+            path = photo.path
+        try:
+            return resolve_original(path), metadata, filename
+        except RuntimeError as exc:
+            abort(404, str(exc))
+
+    @app.post('/api/photos/<int:photo_id>/editor/preview')
+    def raw_editor_preview(photo_id):
+        source, _, _ = editor_source(photo_id)
+        try:
+            settings = normalize_editor_settings(request.get_json(silent=True) or {})
+            output = render_editor_preview(source, settings)
+        except ValueError as exc:
+            abort(400, str(exc))
+        except Exception as exc:
+            app.logger.warning('RAW editor preview failed for %s: %s', source, exc)
+            abort(500, f'RAW editor could not render this file: {exc}')
+        return send_file(output, mimetype='image/jpeg', conditional=False)
+
+    @app.post('/api/photos/<int:photo_id>/editor/auto')
+    def raw_editor_auto(photo_id):
+        source, metadata, _ = editor_source(photo_id)
+        try:
+            return jsonify(settings=auto_editor_settings(source, metadata))
+        except Exception as exc:
+            app.logger.warning('RAW editor auto settings failed for %s: %s', source, exc)
+            abort(500, f'Auto adjustment failed: {exc}')
+
+    @app.post('/api/photos/<int:photo_id>/editor/save')
+    def raw_editor_save(photo_id):
+        source, _, source_name = editor_source(photo_id)
+        try:
+            settings = normalize_editor_settings(request.get_json(silent=True) or {})
+        except ValueError as exc:
+            abort(400, str(exc))
+        with Session() as db:
+            folder_value = configured_edit_folder(db)
+        try:
+            root = resolve_edit_root(folder_value, create=True)
+        except (ValueError, RuntimeError) as exc:
+            abort(503, f'Edited JPEG storage is unavailable: {exc}')
+        safe_stem = ''.join(c if c.isalnum() or c in ('-', '_', '.') else '_' for c in Path(source_name).stem)[:120] or 'photo'
+        stamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
+        filename = f'{safe_stem}-edit-{stamp}-{secrets.token_hex(3)}.jpg'
+        output = root / filename
+        try:
+            save_editor_jpeg(source, settings, output)
+        except Exception as exc:
+            app.logger.warning('RAW editor save failed for %s: %s', source, exc)
+            abort(500, f'Edited JPEG could not be saved: {exc}')
+        return jsonify(filename=filename, folder=str(root), download_url=f'/media/edit/{filename}?download=1')
+
+    @app.get('/media/edit/<filename>')
+    def edited_media(filename):
+        if filename != Path(filename).name or not filename.lower().endswith('.jpg'):
+            abort(404)
+        with Session() as db:
+            value = configured_edit_folder(db)
+        try:
+            root = resolve_edit_root(value, create=False)
+            path = root / filename
+            if path.is_symlink() or not path.is_file() or path.resolve(strict=True).parent != root:
+                abort(404, 'Edited JPEG not found')
+        except (ValueError, RuntimeError, OSError):
+            abort(404, 'Edited JPEG not found')
+        return send_file(path, mimetype='image/jpeg', conditional=True,
+                         as_attachment=request.args.get('download') == '1', download_name=filename)
 
     def active_scan(db):
         return db.scalar(select(Scan).where(Scan.state.in_(['queued', 'running'])).order_by(Scan.id).limit(1))
@@ -395,6 +484,29 @@ def create_app():
             result['estimate_basis'] = f'{edge}px quality {quality} baseline estimate'
         return result
 
+    def edit_stats(db):
+        value = configured_edit_folder(db)
+        try:
+            root = resolve_edit_root(value, create=False)
+        except (ValueError, RuntimeError) as exc:
+            abort(500, f'Edited JPEG folder is unavailable: {exc}')
+        files = 0
+        size = 0
+        if root.is_dir() and not root.is_symlink():
+            for directory, directories, filenames in os.walk(root, followlinks=False):
+                directories[:] = [d for d in directories if not Path(directory, d).is_symlink()]
+                for filename in filenames:
+                    if not filename.lower().endswith('.jpg'):
+                        continue
+                    path = Path(directory, filename)
+                    try:
+                        if path.is_file() and not path.is_symlink():
+                            files += 1
+                            size += path.stat().st_size
+                    except OSError:
+                        continue
+        return dict(folder=value, path=str(root), files=files, bytes=size)
+
     def storage_info():
         return dict(cache_root=str(cache_root()), external_root=str(external_storage_root()),
                     allowed_roots=[str(cache_root()), str(external_storage_root())])
@@ -460,6 +572,32 @@ def create_app():
         with Session() as db:
             return jsonify(**preview_stats(db), **storage_info(), preview_edge_options=PREVIEW_EDGES,
                            preview_quality_options=PREVIEW_QUALITIES, active=False)
+
+    @app.get('/api/settings/edits')
+    def edit_settings():
+        with Session() as db:
+            return jsonify(**edit_stats(db), **storage_info(), active=bool(active_scan(db)))
+
+    @app.put('/api/settings/edits')
+    def update_edit_settings():
+        data = request.get_json(silent=True) or {}
+        try:
+            value = normalize_edit_folder(data.get('folder'))
+            resolve_edit_root(value, create=True)
+        except ValueError as exc:
+            abort(400, str(exc))
+        except RuntimeError as exc:
+            abort(503, str(exc))
+        with Session.begin() as db:
+            if active_scan(db):
+                abort(409, 'Cannot change the edited JPEG folder while a scan or rebuild is active')
+            setting = db.get(Setting, EDIT_FOLDER_KEY)
+            if setting is None:
+                db.add(Setting(key=EDIT_FOLDER_KEY, value=value))
+            else:
+                setting.value = value
+        with Session() as db:
+            return jsonify(**edit_stats(db), **storage_info(), active=False)
 
     def purge_tree(root, kind):
         removed = 0

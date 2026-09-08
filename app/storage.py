@@ -7,8 +7,10 @@ THUMB_FOLDER_KEY = 'thumbnail_folder'
 PREVIEW_FOLDER_KEY = 'preview_folder'
 PREVIEW_EDGE_KEY = 'preview_edge'
 PREVIEW_QUALITY_KEY = 'preview_quality'
+EDIT_FOLDER_KEY = 'edit_folder'
 DEFAULT_THUMB_FOLDER = 'thumbnails'
 DEFAULT_PREVIEW_FOLDER = 'previews'
+DEFAULT_EDIT_FOLDER = 'edits'
 PREVIEW_EDGES = (1280, 1920, 2560, 3840, 5120)
 PREVIEW_QUALITIES = (60, 70, 80, 85, 88, 90, 92, 95)
 
@@ -60,6 +62,10 @@ def normalize_preview_folder(value):
     return _normalize_folder(value, DEFAULT_PREVIEW_FOLDER, 'preview')
 
 
+def normalize_edit_folder(value):
+    return _normalize_folder(value, DEFAULT_EDIT_FOLDER, 'edit')
+
+
 def configured_thumbnail_folder(db):
     setting = db.get(Setting, THUMB_FOLDER_KEY)
     return normalize_thumbnail_folder(setting.value if setting else None)
@@ -68,6 +74,11 @@ def configured_thumbnail_folder(db):
 def configured_preview_folder(db):
     setting = db.get(Setting, PREVIEW_FOLDER_KEY)
     return normalize_preview_folder(setting.value if setting else None)
+
+
+def configured_edit_folder(db):
+    setting = db.get(Setting, EDIT_FOLDER_KEY)
+    return normalize_edit_folder(setting.value if setting else None)
 
 
 def configured_preview_edge(db):
@@ -157,3 +168,7 @@ def resolve_thumbnail_root(value, create=False):
 
 def resolve_preview_root(value, create=False):
     return _resolve_root(value, normalize_preview_folder, 'preview', create=create)
+
+
+def resolve_edit_root(value, create=False):
+    return _resolve_root(value, normalize_edit_folder, 'edit', create=create)

@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>RAW Catalog Settings</title><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/controls.css"><link rel="stylesheet" href="/static/settings.css"><script defer src="/static/settings.js"></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>RAW Catalog Settings</title><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/controls.css"><link rel="stylesheet" href="/static/settings.css"><script defer src="/static/settings.js"></script><script defer src="/static/edit-settings.js"></script></head>
 <body>
 <div id="settingsApp" hidden>
 <header><div class="brand"><span class="mark">R / C</span><div><strong>RAW Catalog</strong><span>Settings</span></div></div><div class="header-actions"><a class="button-link" href="/">Library</a><a class="button-link" href="/indexer">Indexer</a><a class="button-link" href="/statistics">Statistics</a><button id="signOut">Sign out</button></div></header>
@@ -48,6 +48,15 @@
 <div class="danger-row"><div><strong>Rebuild previews</strong><span>Regenerates previews at the selected size and quality without rebuilding metadata or thumbnails.</span></div><button id="rebuildPreviews" class="primary">Rebuild previews</button></div>
 <div class="danger-row"><div><strong>Purge previews</strong><span>Deletes previews in the current location plus the legacy Docker cache. Thumbnails and originals are untouched; missing previews will be regenerated when opened.</span></div><button id="purgePreviews">Purge previews</button></div>
 <p id="previewActionMessage" class="action-message"></p>
+</section>
+
+<section class="settings-card">
+<div class="settings-heading"><div><p class="eyebrow">EDITED JPEGS</p><h2>RAW editor output</h2></div></div>
+<p class="settings-copy">JPEGs saved from the RAW editor have their own permanent output location. Originals, thumbnails, and preview cache files are never modified.</p>
+<form id="editFolderForm" class="settings-form"><label for="editFolder">Edited JPEG path</label><div class="inline-form"><input id="editFolder" type="text" maxlength="2048" autocomplete="off" spellcheck="false" placeholder="/storage/edits" required><button id="saveEditFolder" class="primary" type="submit">Change folder</button></div><p id="editStorageHint" class="hint">Examples: <code>/storage/edits</code> or <code>/data/cache/edits</code>.</p></form>
+<div class="path-box"><span>Current edited JPEG path</span><strong id="editPath">—</strong></div>
+<div class="stats-grid"><div class="stat"><span>Saved JPEGs</span><strong id="editFiles">—</strong></div><div class="stat"><span>Current size</span><strong id="editBytes">—</strong></div></div>
+<p id="editActionMessage" class="action-message"></p>
 </section>
 
 <section class="settings-card">
