@@ -1,0 +1,43 @@
+name: Fix editor preview CSP
+on:
+  push:
+permissions:
+  contents: write
+jobs:
+  test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Allow editor blob previews
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('app/web.py')
+          s = p.read_text()
+          old = "img-src 'self'; style-src"
+          new = "img-src 'self' blob:; style-src"
+          assert old in s
+          p.write_text(s.replace(old, new, 1))
+          PY
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+      - name: Test
+        run: |
+          python -m pytest -q
+          python -m py_compile app/web.py app/editor.py
+          node --check app/static/editor.js
+          grep -q "img-src 'self' blob:" app/web.py
+      - name: Commit fix and remove workflow
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/web.py
+          git rm .github/workflows/fix-editor-preview-csp.yml
+          git commit -m 'Allow RAW editor blob previews in CSP'
+          git push
