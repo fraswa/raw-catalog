@@ -1,31 +1,36 @@
-# RAW Catalog
+# RAW Catalog 2.0.0
 
-RAW Catalog is a self-hosted web application for indexing and browsing large RAW photo archives without modifying the original files.
+RAW Catalog is a self-hosted web application for indexing, searching, previewing, analyzing, and non-destructively editing large RAW photo archives.
 
-It recursively scans a photo tree, extracts EXIF metadata, stores searchable information in MariaDB, creates cached thumbnails/previews, and provides a browser-based Library, Indexer, Settings, and Statistics interface.
+The source photo tree is mounted **read-only** inside the containers. RAW Catalog stores metadata, generated thumbnails/previews, favorites, gear overrides, statistics, and exported JPEG edits separately from the originals.
 
-The original photo tree is mounted **read-only** inside the containers.
+## Highlights in 2.0.0
 
-## Features
-
-- Recursive RAW photo indexing
-- Search/filter by camera, lens, filename/path, capture date, and combinations of filters
-- Thumbnail grid and full-size preview viewer
+- High-throughput recursive RAW indexing with persistent ExifTool sessions
+- Pipelined metadata prefetch + parallel RAW rendering
+- Parallel processing options: 1 / 2 / 4 / 6 / 8 workers
+- Incremental scans, force re-index, skip already imported, and Fast SMB mode
+- Automatic exclusion and cleanup of macOS metadata garbage such as `._*`, `.DS_Store`, `.AppleDouble`, and `__MACOSX`
+- Search/filter by camera, lens, filename/path, capture date, favorites, and combinations
+- Thumbnail grid, fullscreen previews, preview downloads, and original RAW downloads
 - On-demand preview generation
-- Parallel RAW processing: 1 / 2 / 4 / 6 / 8 workers
-- Persistent ExifTool sessions for high-throughput indexing
-- Optional **Fast SMB mode** to reduce SMB metadata round trips
-- Incremental scans and optional "skip already imported" mode
-- Configurable thumbnail and preview storage locations
-- Configurable preview size and JPEG quality
-- Camera/lens/focal-length/aperture statistics
-- Camera maker, megapixel, sensor-size, and lens-mount statistics
-- Camera and lens reference cards in the Statistics view
-- MariaDB-backed metadata database
+- Favorites stored in MariaDB
+- Non-destructive RAW editor with live cached previews
+- RAW editor controls for exposure, contrast, highlights, shadows, temperature, tint, saturation, black/white levels, and denoise
+- Automatic RAW adjustment and full-resolution JPEG export
+- Saved Edits gallery with download/delete support
+- Gear database for camera and lens metadata overrides
+- Camera fields: maker, mount, sensor size, sensor type/format, resolution, notes
+- Lens fields: maker, mount, lens type, focal range, maximum aperture, notes
+- Statistics for cameras, lenses, focal lengths, apertures, makers, megapixels, sensor sizes, sensor types, lens mounts, years, and trends
+- Lens-mount filtering and per-mount breakdowns in Statistics
+- Cached statistics with fast unchanged-catalog validation
+- Configurable thumbnail, preview, and edited-JPEG storage
+- MariaDB-backed catalog
 - Docker Compose deployment
-- Read-only protection for originals
+- Automatic schema upgrades for supported upgrades
 
-Supported RAW extensions currently include:
+Supported RAW extensions include:
 
 `.cr2`, `.cr3`, `.crw`, `.nef`, `.nrw`, `.arw`, `.srf`, `.sr2`, `.dng`, `.raf`, `.orf`, `.rw2`, `.rwl`, `.pef`, `.ptx`, `.srw`, `.3fr`, `.fff`, `.iiq`, `.kdc`, `.dcr`, `.mos`, `.mrw`, `.raw`, `.x3f`.
 
@@ -36,18 +41,18 @@ RAW Catalog runs three Docker services:
 | Service | Purpose |
 | --- | --- |
 | `web` | Flask/Gunicorn web application and API |
-| `worker` | Background indexing and generated-media worker |
+| `worker` | Background indexer and generated-media worker |
 | `db` | MariaDB 11.4 |
 
 Container paths:
 
-| Container path | Purpose |
+| Path | Purpose |
 | --- | --- |
-| `/photos` | Original photo archive, mounted read-only |
-| `/data/cache` | Docker-managed generated-media cache |
-| `/storage` | Host folder or mounted share for generated media |
+| `/photos` | RAW originals, mounted read-only |
+| `/data/cache` | Docker-managed cache and editor working previews |
+| `/storage` | Host folder or mounted share for persistent generated data |
 
-The application runs as UID/GID **10001** inside the `web` and `worker` containers.
+The web and worker containers run as UID/GID **10001**.
 
 ---
 
@@ -55,30 +60,22 @@ The application runs as UID/GID **10001** inside the `web` and `worker` containe
 
 ## Requirements
 
-Recommended server:
-
-- Linux server, Ubuntu 24.04 or newer recommended
+- Linux server; Ubuntu 24.04 or newer recommended
 - Docker Engine
-- Docker Compose v2 (`docker compose`)
+- Docker Compose v2
 - Git
-- Python 3 for the configuration helper
-- A mounted/local directory containing the RAW archive
-- A writable location for thumbnails/previews
+- Python 3 for `setup.py`
+- A local or mounted directory containing the RAW archive
+- A writable location for generated media
 
-For large archives, use local SSD/NVMe for MariaDB and preferably for thumbnails. RAW originals can remain on NAS/SMB storage.
+For large archives, keep MariaDB and preferably thumbnails on SSD/NVMe. RAW originals can remain on SMB/NAS storage.
 
 ## 1. Install Docker on Ubuntu
-
-Install prerequisites:
 
 ```bash
 sudo apt update
 sudo apt install -y ca-certificates curl git python3
-```
 
-Add Docker's official repository:
-
-```bash
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
   -o /etc/apt/keyrings/docker.asc
@@ -101,17 +98,7 @@ docker --version
 docker compose version
 ```
 
-Optional: allow your normal user to run Docker without `sudo`:
-
-```bash
-sudo usermod -aG docker "$USER"
-```
-
-Log out and back in after changing group membership.
-
 ## 2. Clone RAW Catalog
-
-Example installation under `/opt`:
 
 ```bash
 cd /opt
@@ -120,11 +107,15 @@ sudo chown -R "$USER":"$USER" /opt/raw-catalog
 cd /opt/raw-catalog
 ```
 
-## 3. Prepare the photo and cache folders
+To install the 2.0.0 release specifically:
 
-The original photo folder must already exist before running setup.
+```bash
+git checkout v2.0.0
+```
 
-Example using local directories:
+## 3. Prepare storage
+
+Example local paths:
 
 ```bash
 sudo mkdir -p /srv/photos
@@ -132,13 +123,11 @@ sudo mkdir -p /srv/raw-catalog-storage
 sudo chown -R 10001:10001 /srv/raw-catalog-storage
 ```
 
-The photo path only needs to be readable by UID 10001. The storage path must be writable by UID/GID 10001.
+The photo path only needs to be readable by UID 10001. Generated-media storage must be writable by UID/GID 10001.
 
-Do **not** make the original photo archive writable just for RAW Catalog.
+Do **not** make the RAW archive writable just for RAW Catalog.
 
 ## 4. Generate `.env`
-
-Run the included configuration helper:
 
 ```bash
 cd /opt/raw-catalog
@@ -147,29 +136,13 @@ python3 setup.py \
   --storage /srv/raw-catalog-storage
 ```
 
-You will be asked to choose the RAW Catalog web password. It must be at least 12 characters.
+`setup.py` creates `.env`, generates application/database secrets, and asks for the catalog password.
 
-`setup.py` creates a `.env` file with mode `0600` and generates random MariaDB/application secrets automatically.
-
-If `.env` already exists, `setup.py` intentionally refuses to overwrite it. Edit the existing file manually instead.
-
-## 5. Start the application
+## 5. Start
 
 ```bash
 cd /opt/raw-catalog
 docker compose up -d --build
-```
-
-Check container status:
-
-```bash
-docker compose ps
-```
-
-Follow logs:
-
-```bash
-docker compose logs -f web worker db
 ```
 
 Default URL:
@@ -178,80 +151,54 @@ Default URL:
 http://SERVER-IP:8080
 ```
 
-Log in using the catalog password entered during `setup.py`.
+Useful checks:
+
+```bash
+docker compose ps
+docker compose logs -f web worker db
+```
 
 ---
 
-# Using an SMB/NAS photo archive
+# SMB / NAS example
 
-Mount the SMB share on the Linux host first, then give RAW Catalog the Linux mount path. Do not configure an SMB URL directly in the application.
-
-Install CIFS support:
+Mount SMB on the Linux host first, then expose the Linux mount path to RAW Catalog.
 
 ```bash
 sudo apt install -y cifs-utils
+sudo mkdir -p /mnt/photos /mnt/raw-catalog-storage
 ```
 
-Create mount points:
-
-```bash
-sudo mkdir -p /mnt/photos
-sudo mkdir -p /mnt/raw-catalog-storage
-```
-
-Create a protected credentials file:
-
-```bash
-sudo nano /root/.smb-photos
-```
-
-Example:
-
-```text
-username=YOUR_SMB_USER
-password=YOUR_SMB_PASSWORD
-```
-
-Protect it:
-
-```bash
-sudo chmod 600 /root/.smb-photos
-```
-
-Example `/etc/fstab` entries:
+Example `/etc/fstab`:
 
 ```fstab
 //NAS/photos /mnt/photos cifs credentials=/root/.smb-photos,vers=3.1.1,ro,uid=10001,gid=10001,file_mode=0440,dir_mode=0550,_netdev,nofail,x-systemd.automount 0 0
 //NAS/raw-catalog-storage /mnt/raw-catalog-storage cifs credentials=/root/.smb-photos,vers=3.1.1,rw,uid=10001,gid=10001,file_mode=0660,dir_mode=0770,_netdev,nofail,x-systemd.automount 0 0
 ```
 
-Reload and test:
+Then:
 
 ```bash
 sudo systemctl daemon-reload
 sudo mount -a
-ls -la /mnt/photos
-sudo -u '#10001' test -r /mnt/photos && echo "photo share readable"
-sudo -u '#10001' test -w /mnt/raw-catalog-storage && echo "cache share writable"
-```
 
-Then configure:
-
-```bash
 python3 setup.py \
   --photos /mnt/photos \
   --storage /mnt/raw-catalog-storage
 ```
 
-For best performance, keep thumbnails on local SSD/NVMe when possible. Large previews are more suitable for NAS-backed storage than hundreds of thousands of small thumbnail files.
+For large archives, a good layout is:
+
+- RAW originals: NAS/SMB
+- MariaDB: local SSD/NVMe
+- thumbnails: local SSD/NVMe
+- full previews / exported edits: local disk or NAS depending on capacity
 
 ---
 
-# Configuration
+# Main configuration
 
-The main deployment configuration is stored in `.env`.
-
-Example:
+Typical `.env` values:
 
 ```dotenv
 PHOTO_PATH='/mnt/photos'
@@ -262,7 +209,7 @@ COOKIE_SECURE='false'
 PREVIEW_EDGE='2560'
 ```
 
-Secrets generated by `setup.py` are also stored there:
+Secrets generated by `setup.py` are also stored in `.env`:
 
 ```dotenv
 DB_PASSWORD='...'
@@ -271,187 +218,200 @@ SECRET_KEY='...'
 CATALOG_PASSWORD='...'
 ```
 
-Do not commit `.env` to Git.
+Never commit `.env`.
 
-## Environment variables
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `PHOTO_PATH` | required | Host path containing RAW originals |
-| `STORAGE_PATH` | `./storage` | Writable host path exposed as `/storage` |
-| `WEB_PORT` | `8080` | TCP port exposed by the web application |
-| `BIND_IP` | `0.0.0.0` | Host address to bind the web service to |
-| `COOKIE_SECURE` | `false` | Set to `true` when the site is served only through HTTPS |
-| `PREVIEW_EDGE` | `2560` | Default maximum preview dimension |
-| `CATALOG_PASSWORD` | required | Web login password |
-| `DB_PASSWORD` | required | MariaDB application password |
-| `DB_ROOT_PASSWORD` | required | MariaDB root password |
-| `SECRET_KEY` | required | Flask session secret |
-
-After editing `.env`, recreate the affected containers:
-
-```bash
-docker compose up -d
-```
-
-If application code or the Docker image changed, rebuild:
-
-```bash
-docker compose up -d --build
-```
-
-## Reverse proxy / HTTPS
-
-RAW Catalog can be placed behind Nginx, Caddy, Traefik, Nginx Proxy Manager, or another HTTPS reverse proxy.
-
-When the application is available only over HTTPS, set:
+When using HTTPS through a reverse proxy:
 
 ```dotenv
 COOKIE_SECURE='true'
 ```
 
-Then recreate the web container:
+---
 
-```bash
-docker compose up -d web
-```
+# Library
 
-You can bind RAW Catalog only to localhost when using a reverse proxy on the same host:
+The Library provides:
 
-```dotenv
-BIND_IP='127.0.0.1'
-WEB_PORT='8080'
-```
+- camera filter
+- lens filter
+- filename/folder search
+- capture-date range
+- favorites-only filter
+- capture/indexed sorting
+- thumbnail browsing
+- fullscreen preview
+- RAW and JPEG download
+- RAW Editor launch
+
+Photo identity is path-based. Moving/copying the same RAW to a different path creates a new catalog row.
+
+Favorites survive normal same-path re-indexing.
 
 ---
 
-# First-time configuration in the web UI
+# Indexer
 
-## Settings
+The Indexer recursively scans the selected directory below `/photos`.
 
-The Settings page controls generated media independently from the original photo archive.
+Available options include:
 
-You can configure:
+- **Parallel processing:** 1 / 2 / 4 / 6 / 8 workers
+- **Skip preview generation:** index metadata + thumbnails; generate full previews on demand
+- **Skip already imported:** skip exact paths already in the database
+- **Force re-index:** refresh metadata and generated media
+- **Fast SMB mode:** skip the second source `stat()` verification to reduce network metadata round trips
 
-- thumbnail folder
-- preview folder
-- preview maximum edge
-- preview JPEG quality
-- cache statistics
-- thumbnail/preview purge
-- thumbnail/preview rebuild
-
-Generated media can be placed under either:
-
-- `/data/cache` — Docker-managed cache volume
-- `/storage` — the host path configured by `STORAGE_PATH`
-
-Changing a cache path does not move old files automatically.
-
-## Indexer
-
-Open **Indexer** and select the source folder to scan. The selected path must remain below `/photos`.
-
-Indexer options:
-
-### Parallel processing
-
-Available values:
+The worker pipelines work approximately like this:
 
 ```text
-1 / 2 / 4 / 6 / 8 workers
+metadata batch N+1  ----->
+RAW render batch N ----->
+DB writes          ----->
 ```
 
-Start with **4 workers** on a typical 6-core server and benchmark your own storage/CPU combination.
+Only one metadata-prefetch stream is used, while RAW rendering can run in parallel.
 
-### Skip preview generation
+macOS-generated filesystem metadata such as `._*`, `.DS_Store`, `.AppleDouble`, `__MACOSX`, `.Spotlight-V100`, `.Trashes`, and `.fseventsd` is ignored. Previously indexed garbage rows are removed during a normal scan.
 
-Creates metadata and thumbnails during indexing. A full preview is generated automatically when the image is opened for the first time.
+---
 
-This is recommended for very large archives.
+# RAW Editor
 
-### Skip already imported photos
+The RAW Editor is non-destructive: it always reads the RAW and writes a separate JPEG.
 
-Skips a file when the exact source path already exists in the catalog.
+Controls in 2.0.0:
 
-Photo identity is currently path-based: moving or copying the same RAW to a new path creates another catalog entry.
+- Exposure
+- Contrast
+- Highlights
+- Shadows
+- Temperature
+- Tint
+- Saturation
+- Black level
+- White level
+- Simple denoise
 
-### Force re-index existing photos
+Preview rendering uses a cached decoded working image. Normal tone/color changes reuse that cached base; changing denoise can require a new RAW decode.
 
-Re-reads metadata and regenerates requested media even if the file appears unchanged.
+**Auto** calculates conservative exposure and levels and can apply ISO-based denoise.
 
-This is mutually exclusive with **Skip already imported photos**.
+**Save full-resolution JPEG** performs a full RAW decode and writes the result to the configured edits folder.
 
-### Fast SMB mode
+The default editor working cache is:
 
-Skips the second `stat()` check after processing a source file.
+```text
+/data/cache/editor-work
+```
 
-The initial filesystem check, metadata read, RAW read, and read-only mount protection remain in place. This reduces SMB round trips, but if a RAW changes while it is being indexed, that change will be detected on the next scan instead of immediately.
+For persistent saved edits, configure the edited-JPEG folder under `/storage`, for example:
+
+```text
+/storage/edits
+```
+
+The **Edits** page provides a gallery of saved JPEGs with download and delete actions.
+
+---
+
+# Gear database
+
+Open **Gear database** from Statistics or Settings.
+
+Camera overrides:
+
+- maker
+- lens mount
+- sensor size
+- sensor type / format
+- resolution
+- notes
+
+Lens overrides:
+
+- maker
+- lens mount
+- lens type
+- focal range
+- maximum aperture
+- notes
+
+Recommended lens formatting:
+
+```text
+Focal range:       24-70 mm
+Maximum aperture:  f/2.8
+```
+
+Variable-aperture example:
+
+```text
+Focal range:       35-350 mm
+Maximum aperture:  f/3.5-5.6
+```
+
+Overrides affect catalog interpretation/statistics only. Original RAW EXIF is never modified.
 
 ---
 
 # Statistics
 
-The Statistics page aggregates the indexed archive and caches the result in MariaDB.
+Statistics are cached in MariaDB and rebuilt only when the catalog or Gear database changes, or when a manual refresh is requested.
 
-Current statistics include:
+Available views include:
 
-- photographs and dated/undated counts
-- camera usage
-- lens usage
-- focal-length usage
-- aperture usage
-- camera usage over time
+- total photographs / dated photographs
+- cameras
+- lenses
+- focal lengths
+- apertures
+- camera makers
+- megapixels
+- sensor sizes
+- sensor types / formats
+- lens mounts
 - photographs by year
-- camera maker usage
-- megapixel usage
-- sensor-size usage
-- lens-mount usage
-- metadata coverage percentages
+- camera usage trends
 - per-camera breakdowns
 - per-lens breakdowns
+- per-mount breakdowns
 
-Hover or focus the information control beside supported camera/lens names for a reference card showing technical and archive-specific information.
+The lens-mount selector can scope camera, lens, focal-length, aperture, maker, sensor, resolution, year, and trend statistics to a specific mount.
 
-Some newer technical fields such as sensor size, lens maker, and explicit lens mount require metadata collected by recent versions of the indexer. Re-index older files if those fields have low coverage.
+Lens-specific mount data takes precedence over camera-body mount fallback, which improves statistics for adapted lenses.
 
 ---
 
-# Performance recommendations
+# Generated-media storage
 
-For large archives:
+Settings allow independent configuration of:
 
-1. Keep MariaDB on local SSD/NVMe.
-2. Prefer local SSD/NVMe for the thumbnail cache.
-3. RAW originals may remain on SMB/NAS storage.
-4. Use **Skip preview generation** for the initial import when full previews are not needed immediately.
-5. Enable **Fast SMB mode** when the source archive is stable/read-only.
-6. Benchmark 4 and 6 workers rather than assuming more threads are always faster.
-7. Use SMB 3.x and a low-latency network when scanning network storage.
+- thumbnail folder
+- preview folder
+- preview maximum edge
+- preview JPEG quality
+- edited-JPEG folder
+- purge/rebuild operations
 
-The worker uses persistent ExifTool `-stay_open` processes to avoid repeatedly starting ExifTool for every RAW file.
+Generated files may live under:
 
-Useful monitoring commands:
-
-```bash
-docker stats
+```text
+/data/cache
 ```
 
-```bash
-iostat -xz 1
+or under the persistent host-backed path:
+
+```text
+/storage
 ```
 
-Install `iostat` on Ubuntu with:
-
-```bash
-sudo apt install -y sysstat
-```
+Changing a configured path does not automatically move existing files.
 
 ---
 
 # Updating
 
-If no indexing/rebuild job is running:
+If no index/rebuild job is active:
 
 ```bash
 cd /opt/raw-catalog
@@ -459,151 +419,103 @@ git pull
 docker compose up -d --build
 ```
 
-Avoid restarting the worker during an active indexing job. A worker restart marks the active job as interrupted; already committed catalog entries remain and the next incremental scan can continue the work.
+Avoid recreating the worker during an active scan because the current job will be interrupted. Already committed catalog rows remain and the next incremental scan can continue.
 
-Check logs after updating:
-
-```bash
-docker compose logs --tail=100 web worker
-```
-
----
-
-# Backup
-
-Important persistent data:
-
-- MariaDB Docker volume: `database`
-- generated-media Docker volume: `previews`
-- external generated-media path configured by `STORAGE_PATH`
-- `.env`
-
-The RAW originals are not stored inside RAW Catalog and should be backed up separately using your normal photo-backup strategy.
-
-Do **not** use the following command unless you intentionally want to destroy the database and Docker-managed cache:
+Do not use:
 
 ```bash
 docker compose down -v
 ```
 
-Normal stop/start operations should use:
+unless you intentionally want to remove MariaDB data and Docker-managed cache volumes.
 
-```bash
-docker compose stop
-docker compose start
-```
+---
 
-or:
+# Backup
 
-```bash
-docker compose up -d
-```
+Back up at least:
+
+- MariaDB `database` volume
+- `.env`
+- any persistent `/storage` content, especially saved edits
+- generated caches if you do not want to regenerate them
+
+RAW originals are outside RAW Catalog and must be backed up separately.
 
 ---
 
 # Troubleshooting
 
-## Containers do not start
+Container status:
 
 ```bash
 docker compose ps
-docker compose logs --tail=200
 ```
 
-Validate the Compose file and `.env`:
-
-```bash
-docker compose config
-```
-
-## Photo folder is unavailable
-
-Confirm the host mount exists:
-
-```bash
-findmnt /mnt/photos
-ls -la /mnt/photos
-```
-
-Confirm UID 10001 can read it:
-
-```bash
-sudo -u '#10001' find /mnt/photos -maxdepth 1 -type f -print -quit
-```
-
-## Generated media cannot be written
-
-Check the configured storage path:
-
-```bash
-sudo -u '#10001' touch /mnt/raw-catalog-storage/.raw-catalog-write-test
-sudo rm /mnt/raw-catalog-storage/.raw-catalog-write-test
-```
-
-For SMB mounts, verify `uid=10001,gid=10001` and suitable `file_mode` / `dir_mode` mount options.
-
-## Web UI returns an error
+Web logs:
 
 ```bash
 docker compose logs --tail=100 web
 ```
 
-## Indexer errors
+Indexer logs:
 
 ```bash
 docker compose logs --tail=200 worker
 ```
 
-## MariaDB errors
+Database logs:
 
 ```bash
 docker compose logs --tail=200 db
+```
+
+Validate Compose configuration:
+
+```bash
+docker compose config
 ```
 
 ---
 
 # Security model
 
-RAW Catalog is designed so that the photo source remains read-only:
+RAW Catalog protects originals by design:
 
-- Docker mounts `PHOTO_PATH` at `/photos` with `read_only: true`.
-- The application rejects source paths outside the configured photo root.
-- Symbolic links are not followed during recursive indexing.
-- Web and worker containers run as unprivileged UID/GID 10001.
-- Containers use `no-new-privileges` and drop Linux capabilities.
+- `PHOTO_PATH` is mounted at `/photos` read-only
+- source paths outside the configured photo root are rejected
+- symbolic links are not followed during recursive indexing
+- web/worker run as unprivileged UID/GID 10001
+- containers use restricted capabilities / no-new-privileges
+- edits and metadata overrides are stored outside the source RAW tree
 
-Generated thumbnails/previews and MariaDB data are writable, but originals are not.
-
-For access from the public Internet, place the application behind HTTPS and an authenticated/restricted reverse proxy or VPN.
+For Internet access, use HTTPS and an appropriately restricted reverse proxy or VPN.
 
 ---
 
-# Development / tests
-
-Create a Python environment and install dependencies:
+# Development
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 pip install pytest
-```
-
-Run tests:
-
-```bash
 python -m pytest -q
 ```
 
 JavaScript syntax checks can be run with Node.js:
 
 ```bash
-node --check app/static/indexer.js
+node --check app/static/app.js
+node --check app/static/editor.js
 node --check app/static/statistics.js
+node --check app/static/catalog.js
 ```
 
 ---
 
-## License
+# Version
 
-No license has been declared in this repository yet.
+Current release: **2.0.0**
+
+The repository also contains a `VERSION` file and release tags use the `vMAJOR.MINOR.PATCH` format.
