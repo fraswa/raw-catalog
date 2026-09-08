@@ -13,6 +13,7 @@ from app.imaging import (EXTENSIONS, metadata_batch, make_previews, make_thumbna
 from app.storage import (cache_root, configured_thumbnail_folder, configured_preview_folder,
                          configured_preview_edge, configured_preview_quality,
                          resolve_thumbnail_root, resolve_preview_root)
+from app.statistics import CACHE_KEY as STATISTICS_CACHE_KEY
 
 log = logging.getLogger(__name__)
 CACHE = os.environ.get('CACHE_DIR', '/data/cache')
@@ -41,6 +42,12 @@ def purge_macos_garbage_rows():
     with Session.begin() as db:
         result = db.execute(delete(Photo).where(or_(*clauses)))
         removed = result.rowcount or 0
+        # Deleting a non-highest photo would not change MAX(id), so explicitly
+        # invalidate the statistics payload whenever cleanup removes rows.
+        if removed:
+            cached = db.get(Setting, STATISTICS_CACHE_KEY)
+            if cached:
+                db.delete(cached)
     if removed:
         log.info('Removed %s previously indexed macOS metadata rows', removed)
     return removed

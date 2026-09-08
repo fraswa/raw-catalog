@@ -27,7 +27,7 @@ class Photo(Base):
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     cache_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     preview_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    indexed_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    indexed_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
     favorite: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     __table_args__ = (Index('ix_camera_lens_id', 'camera', 'lens', 'id'),)
 
@@ -85,6 +85,12 @@ def _upgrade_mysql_schema():
         """))
         if not favorite_index:
             connection.execute(text('CREATE INDEX ix_photos_favorite ON photos (favorite)'))
+        indexed_at_index = connection.scalar(text("""
+            SELECT COUNT(*) FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'photos' AND INDEX_NAME = 'ix_photos_indexed_at'
+        """))
+        if not indexed_at_index:
+            connection.execute(text('CREATE INDEX ix_photos_indexed_at ON photos (indexed_at)'))
 
 
 def _upgrade_sqlite_schema():
@@ -95,6 +101,7 @@ def _upgrade_sqlite_schema():
         if columns and 'favorite' not in columns:
             connection.execute(text('ALTER TABLE photos ADD COLUMN favorite BOOLEAN NOT NULL DEFAULT 0'))
         connection.execute(text('CREATE INDEX IF NOT EXISTS ix_photos_favorite ON photos (favorite)'))
+        connection.execute(text('CREATE INDEX IF NOT EXISTS ix_photos_indexed_at ON photos (indexed_at)'))
 
 
 def init_db():

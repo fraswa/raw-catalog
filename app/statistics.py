@@ -120,8 +120,12 @@ def _active_years(counter):
 
 
 def _signature(db):
-    count, latest = db.execute(select(func.count(Photo.id), func.max(Photo.indexed_at))).one()
-    return f'{count}:{latest.isoformat() if latest else ""}:{reference_fingerprint(db)}'
+    # Cache validation must stay cheap even with hundreds of thousands of photos.
+    # MAX(id) detects inserts and MAX(indexed_at) detects re-indexed rows; both are
+    # index lookups instead of a COUNT() scan over the whole catalog.
+    latest_id = db.scalar(select(func.max(Photo.id))) or 0
+    latest = db.scalar(select(func.max(Photo.indexed_at)))
+    return f'{latest_id}:{latest.isoformat() if latest else ""}:{reference_fingerprint(db)}'
 
 
 def build_statistics(db, force=False):
