@@ -16,7 +16,9 @@ jobs:
         with:
           python-version: '3.12'
       - name: Apply feature patch
-        run: python tools/editor_reference_patch.py
+        run: |
+          python -c "from pathlib import Path; p=Path('tools/editor_reference_patch.py'); s=p.read_text(); s=s.replace(\"max-width:calc(100vw - 24px)}\\n'''\", \"max-width:calc(100vw - 24px)}'''\"); p.write_text(s)"
+          python tools/editor_reference_patch.py
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
