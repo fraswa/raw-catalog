@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>RAW Catalog</title><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/controls.css"><link rel="stylesheet" href="/static/editor.css"><script defer src="/static/editor.js"></script><script defer src="/static/app.js"></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>RAW Catalog</title><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/controls.css"><link rel="stylesheet" href="/static/editor.css"><script defer src="/static/editor.js?v=2"></script><script defer src="/static/app.js"></script></head>
 <body>
 <section id="login" class="login" hidden><form id="loginForm" class="login-card"><div class="mark">R / C</div><p class="eyebrow">YOUR PHOTO ARCHIVE</p><h1>RAW Catalog</h1><label for="password">Catalog password</label><input id="password" type="password" autocomplete="current-password" required><button class="primary" type="submit">Open catalog</button><p id="loginError" role="alert"></p></form></section>
 <div id="application" hidden>
@@ -33,15 +33,21 @@
 <aside class="editor-controls"><div class="editor-actions"><button id="autoEdit" class="primary">Auto</button><button id="resetEdit">Reset</button></div>
 <div class="editor-group">
 <div class="editor-control"><label for="editExposure">Exposure</label><output id="editExposureValue">0.0 EV</output><input id="editExposure" type="range" min="-4" max="4" step="0.1" value="0"></div>
+<div class="editor-control"><label for="editContrast">Contrast</label><output id="editContrastValue">0</output><input id="editContrast" type="range" min="-100" max="100" step="1" value="0"></div>
+<div class="editor-control"><label for="editHighlights">Highlights</label><output id="editHighlightsValue">0</output><input id="editHighlights" type="range" min="-100" max="100" step="1" value="0"></div>
+<div class="editor-control"><label for="editShadows">Shadows</label><output id="editShadowsValue">0</output><input id="editShadows" type="range" min="-100" max="100" step="1" value="0"></div>
+</div>
+<div class="editor-group">
 <div class="editor-control"><label for="editTemperature">Temperature</label><output id="editTemperatureValue">6500 K</output><input id="editTemperature" type="range" min="2000" max="12000" step="100" value="6500"></div>
 <div class="editor-control"><label for="editTint">Tint</label><output id="editTintValue">0</output><input id="editTint" type="range" min="-100" max="100" step="1" value="0"></div>
+<div class="editor-control"><label for="editSaturation">Saturation</label><output id="editSaturationValue">0</output><input id="editSaturation" type="range" min="-100" max="100" step="1" value="0"></div>
 </div>
 <div class="editor-group">
 <div class="editor-control"><label for="editBlack">Levels — black</label><output id="editBlackValue">0</output><input id="editBlack" type="range" min="0" max="80" step="1" value="0"></div>
 <div class="editor-control"><label for="editWhite">Levels — white</label><output id="editWhiteValue">255</output><input id="editWhite" type="range" min="128" max="255" step="1" value="255"></div>
 <div class="editor-control"><label for="editDenoise">Simple denoise</label><output id="editDenoiseValue">0%</output><input id="editDenoise" type="range" min="0" max="100" step="10" value="0"></div>
 </div>
-<p class="editor-note">Auto analyzes the RAW for conservative exposure, levels, and ISO-based denoise. Temperature/tint are relative adjustments around the camera white balance.</p>
+<p class="editor-note">Auto analyzes the RAW for conservative exposure, levels, and ISO-based denoise. Contrast, highlights, shadows and saturation are non-destructive post-decode controls; temperature/tint remain relative to the camera white balance.</p>
 <div class="editor-save"><button id="saveEdit" class="primary">Save full-resolution JPEG</button><a id="downloadEdit" class="button-link" href="#" hidden>Download saved JPEG</a><p id="editorStatus" class="editor-status"></p></div>
 </aside></div></div></dialog>
 </body></html>
