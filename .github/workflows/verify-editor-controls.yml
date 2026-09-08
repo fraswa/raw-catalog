@@ -1,0 +1,47 @@
+name: Verify RAW editor controls
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/editor.py'
+      - 'app/static/editor.js'
+      - 'app/static/index.html'
+      - 'tests/test_editor.py'
+      - '.github/workflows/verify-editor-controls.yml'
+permissions:
+  contents: write
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Python tests
+        run: python -m pytest -q
+      - name: Python compile
+        run: python -m compileall -q app
+      - name: JavaScript syntax
+        run: node --check app/static/editor.js
+      - name: Verify new controls are wired
+        run: |
+          grep -q "'contrast'" app/editor.py
+          grep -q "'highlights'" app/editor.py
+          grep -q "'shadows'" app/editor.py
+          grep -q "'saturation'" app/editor.py
+          grep -q 'editContrast' app/static/index.html
+          grep -q 'editHighlights' app/static/index.html
+          grep -q 'editShadows' app/static/index.html
+          grep -q 'editSaturation' app/static/index.html
+          grep -q 'editor.js?v=2' app/static/index.html
+      - name: Remove temporary workflow
+        if: success()
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/verify-editor-controls.yml
+          git commit -m 'Remove temporary RAW editor verification workflow'
+          git push
