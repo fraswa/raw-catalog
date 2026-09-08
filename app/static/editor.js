@@ -1,32 +1,42 @@
 'use strict';
 (() => {
   const $ = id => document.getElementById(id);
-  const defaults = {exposure:0,temperature:6500,tint:0,black:0,white:255,denoise:0};
-  const controls = ['exposure','temperature','tint','black','white','denoise'];
+  const defaults = {exposure:0,contrast:0,highlights:0,shadows:0,temperature:6500,tint:0,saturation:0,black:0,white:255,denoise:0};
+  const controls = ['exposure','contrast','highlights','shadows','temperature','tint','saturation','black','white','denoise'];
   let photo = null, csrf = '', timer = null, objectUrl = '', revision = 0, previewController = null;
 
   function settings() {
     return {
       exposure:Number($('editExposure').value),
+      contrast:Number($('editContrast').value),
+      highlights:Number($('editHighlights').value),
+      shadows:Number($('editShadows').value),
       temperature:Number($('editTemperature').value),
       tint:Number($('editTint').value),
+      saturation:Number($('editSaturation').value),
       black:Number($('editBlack').value),
       white:Number($('editWhite').value),
       denoise:Number($('editDenoise').value)
     };
   }
+  function signed(value) { return `${value>0?'+':''}${Math.round(value)}`; }
   function displayValues() {
     const s=settings();
     $('editExposureValue').textContent=`${s.exposure>0?'+':''}${s.exposure.toFixed(1)} EV`;
+    $('editContrastValue').textContent=signed(s.contrast);
+    $('editHighlightsValue').textContent=signed(s.highlights);
+    $('editShadowsValue').textContent=signed(s.shadows);
     $('editTemperatureValue').textContent=`${Math.round(s.temperature)} K`;
-    $('editTintValue').textContent=`${s.tint>0?'+':''}${Math.round(s.tint)}`;
+    $('editTintValue').textContent=signed(s.tint);
+    $('editSaturationValue').textContent=signed(s.saturation);
     $('editBlackValue').textContent=String(Math.round(s.black));
     $('editWhiteValue').textContent=String(Math.round(s.white));
     $('editDenoiseValue').textContent=`${Math.round(s.denoise)}%`;
   }
   function applySettings(value) {
     const s={...defaults,...(value||{})};
-    $('editExposure').value=s.exposure;$('editTemperature').value=s.temperature;$('editTint').value=s.tint;
+    $('editExposure').value=s.exposure;$('editContrast').value=s.contrast;$('editHighlights').value=s.highlights;$('editShadows').value=s.shadows;
+    $('editTemperature').value=s.temperature;$('editTint').value=s.tint;$('editSaturation').value=s.saturation;
     $('editBlack').value=s.black;$('editWhite').value=s.white;$('editDenoise').value=s.denoise;
     displayValues();
   }
