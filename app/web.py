@@ -12,7 +12,9 @@ from werkzeug.exceptions import HTTPException
 from app.db import Session, Photo, Scan, Setting, engine
 from app.imaging import cache_file, make_preview
 from app.editor import (normalize_settings as normalize_editor_settings, render_preview as render_editor_preview,
-                        auto_settings as auto_editor_settings, save_jpeg as save_editor_jpeg)
+                        auto_settings as auto_editor_settings, save_jpeg as save_editor_jpeg,
+                        save_chatgpt_jpeg)
+from app.chatgpt_export import COSPLAY_PROMPT, DEFAULT_MEGAPIXELS, normalize_megapixels
 from app.statistics import build_statistics
 from app.reference import save_reference_override, reference_field_schema, reference_field_names
 from app.storage import (THUMB_FOLDER_KEY, PREVIEW_FOLDER_KEY, PREVIEW_EDGE_KEY,
@@ -458,6 +460,40 @@ def create_app():
             app.logger.warning('RAW editor save failed for %s: %s', source, exc)
             abort(500, f'Edited JPEG could not be saved: {exc}')
         return jsonify(filename=filename, folder=str(root), download_url=f'/media/edit/{filename}?download=1')
+
+    @app.get('/api/editor/chatgpt')
+    def chatgpt_export_prompt():
+        return jsonify(prompt=COSPLAY_PROMPT, default_megapixels=DEFAULT_MEGAPIXELS)
+
+    @app.post('/api/photos/<int:photo_id>/editor/chatgpt-export')
+    def raw_editor_chatgpt_export(photo_id):
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            abort(400, 'Export options must be an object')
+        try:
+            megapixels = normalize_megapixels(data.get('megapixels', DEFAULT_MEGAPIXELS))
+            settings = normalize_editor_settings(data.get('settings', {}))
+        except ValueError as exc:
+            abort(400, str(exc))
+        source, _, source_name = editor_source(photo_id)
+        with Session() as db:
+            folder_value = configured_edit_folder(db)
+        try:
+            root = resolve_edit_root(folder_value, create=True)
+        except (ValueError, RuntimeError) as exc:
+            abort(503, f'Edited JPEG storage is unavailable: {exc}')
+        safe_stem = ''.join(c if c.isalnum() or c in ('-', '_', '.') else '_' for c in Path(source_name).stem)[:120] or 'photo'
+        stamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
+        filename = f'{safe_stem}-chatgpt-{megapixels}mp-{stamp}-{secrets.token_hex(3)}.jpg'
+        try:
+            details = save_chatgpt_jpeg(source, settings, root / filename, megapixels)
+        except ValueError as exc:
+            abort(400, str(exc))
+        except Exception as exc:
+            app.logger.warning('ChatGPT JPEG export failed for %s: %s', source, exc)
+            abort(500, 'JPEG could not be prepared. Check the application logs.')
+        return jsonify(filename=filename, folder=str(root),
+                       download_url=f'/media/edit/{filename}?download=1', **details)
 
     def resolve_edited_file(filename, create_root=False):
         if not isinstance(filename, str) or filename != Path(filename).name or not filename.lower().endswith(('.jpg', '.jpeg')):

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from PIL import Image, ImageEnhance, ImageStat
 import rawpy
+from app.chatgpt_export import DEFAULT_MEGAPIXELS, normalize_megapixels, save_export
 
 DEFAULT_SETTINGS = {
     'exposure': 0.0,
@@ -248,6 +249,15 @@ def save_jpeg(path, settings, output_path, quality=92):
         except FileNotFoundError:
             pass
     return output_path
+
+
+def save_chatgpt_jpeg(path, settings, output_path, megapixels=DEFAULT_MEGAPIXELS):
+    megapixels = normalize_megapixels(megapixels)
+    image = render(path, settings)
+    try:
+        return save_export(image, output_path, megapixels)
+    finally:
+        image.close()
 
 
 def _percentile(histogram, fraction):

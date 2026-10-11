@@ -67,6 +67,71 @@ def test_auth_and_csrf():
     assert client.post('/api/login',json={'password':'wrong'},headers={'X-CSRF-Token':token}).status_code == 401
 
 
+def test_chatgpt_export_auth_and_csrf(client):
+    anonymous = create_app().test_client()
+    assert anonymous.get('/api/editor/chatgpt').status_code == 401
+    assert anonymous.post('/api/photos/1/editor/chatgpt-export').status_code == 401
+    assert client.post('/api/photos/1/editor/chatgpt-export', json={}).status_code == 403
+    prompt = client.get('/api/editor/chatgpt')
+    assert prompt.status_code == 200 and prompt.json['prompt']
+    assert prompt.json['default_megapixels'] == 15
+
+
+def test_chatgpt_export_renders_adjustments_saves_in_edits_and_preserves_raw(client, tmp_path, monkeypatch):
+    import app.editor as editor
+    root = tmp_path / 'photos'; root.mkdir()
+    source = root / 'cosplay.cr3'; source.write_bytes(b'original-raw-do-not-change')
+    stat = source.stat()
+    monkeypatch.setenv('PHOTO_ROOT', str(root))
+    monkeypatch.setenv('CACHE_DIR', str(tmp_path / 'cache'))
+    monkeypatch.setenv('EXTERNAL_STORAGE_ROOT', str(tmp_path / 'storage'))
+    calls = []
+    def decode(path, denoise=0, half_size=False):
+        calls.append((path, denoise, half_size))
+        return Image.new('RGB', (360, 240), (40, 40, 40))
+    monkeypatch.setattr(editor, '_decode_raw', decode)
+    with Session.begin() as db:
+        photo = Photo(path_hash='cosplay-export', path=str(source), filename=source.name, size=source.stat().st_size,
+                      mtime_ns=source.stat().st_mtime_ns)
+        db.add(photo); db.flush(); photo_id = photo.id
+    response = client.post(f'/api/photos/{photo_id}/editor/chatgpt-export',
+                           json={'megapixels': 18, 'settings': {'exposure': 1, 'denoise': 40}}, headers=headers(client))
+    assert response.status_code == 200
+    data = response.json
+    assert data['filename'].startswith('cosplay-chatgpt-18mp-')
+    assert (data['width'], data['height']) == (360, 240)
+    assert data['target_megapixels'] == 18
+    downloaded = client.get(data['download_url'])
+    assert downloaded.status_code == 200 and downloaded.mimetype == 'image/jpeg'
+    assert 'attachment' in downloaded.headers['Content-Disposition']
+    with Image.open(Path(data['folder']) / data['filename']) as jpeg:
+        assert jpeg.getpixel((0, 0))[0] > 60  # Exposure adjustment was applied.
+        assert jpeg.getexif() == {}
+    assert calls == [(source.resolve(), 40, False)]
+    assert source.read_bytes() == b'original-raw-do-not-change'
+    assert source.stat().st_mtime_ns == stat.st_mtime_ns
+    assert [item['filename'] for item in client.get('/api/edits').json['items']] == [data['filename']]
+
+
+@pytest.mark.parametrize('payload', [[], None, {'megapixels': True}, {'megapixels': 12.5},
+                                     {'megapixels': 19}, {'settings': []}, {'settings': {'exposure': 6}}])
+def test_chatgpt_export_rejects_invalid_options_before_rendering(client, payload):
+    assert client.post('/api/photos/1/editor/chatgpt-export', json=payload, headers=headers(client)).status_code == 400
+
+
+def test_chatgpt_export_rejects_missing_or_outside_original(client, tmp_path, monkeypatch):
+    root = tmp_path / 'photos'; root.mkdir()
+    outside = tmp_path / 'outside.cr3'; outside.write_bytes(b'outside')
+    monkeypatch.setenv('PHOTO_ROOT', str(root))
+    with Session.begin() as db:
+        photo = Photo(path_hash='outside-export', path=str(outside), filename=outside.name, size=7, mtime_ns=1)
+        db.add(photo); db.flush(); photo_id = photo.id
+    for selected in (photo_id, 99999):
+        response = client.post(f'/api/photos/{selected}/editor/chatgpt-export', json={}, headers=headers(client))
+        assert response.status_code == 404
+    assert outside.read_bytes() == b'outside'
+
+
 def test_combined_filters_date_search_sort_and_pagination(client):
     seed_dates()
     args={'camera':'Canon EOS R6','lens':'EF 50mm f/1.2L','limit':1}

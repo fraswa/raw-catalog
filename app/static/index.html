@@ -49,5 +49,19 @@
 </div>
 <p class="editor-note">Auto analyzes the RAW for conservative exposure, levels, and ISO-based denoise. Contrast, highlights, shadows and saturation are non-destructive post-decode controls; temperature/tint remain relative to the camera white balance.</p>
 <div class="editor-save"><button id="saveEdit" class="primary">Save full-resolution JPEG</button><a id="downloadEdit" class="button-link" href="#" hidden>Download saved JPEG</a><p id="editorStatus" class="editor-status"></p></div>
+<section class="editor-group editor-chatgpt" aria-labelledby="chatgptHeading">
+<h2 id="chatgptHeading">Export for ChatGPT</h2>
+<p class="editor-note">Prepare a JPEG with your current adjustments, then upload it in ChatGPT with the cosplay prompt below.</p>
+<label for="chatgptMegapixels">JPEG size</label>
+<select id="chatgptMegapixels"><option value="12">Up to 12 MP</option><option value="15" selected>Up to 15 MP</option><option value="18">Up to 18 MP</option></select>
+<p class="editor-note">Keeps the aspect ratio. Smaller photos keep their native size. Saves an sRGB JPEG under 19 MB without source EXIF or GPS.</p>
+<div class="editor-save"><button id="exportChatgpt" class="primary">Prepare JPEG for ChatGPT</button><a id="downloadChatgpt" class="button-link" href="#" hidden>Download ChatGPT JPEG</a></div>
+<label for="chatgptPrompt">Cosplay editing prompt</label>
+<textarea id="chatgptPrompt" rows="8" spellcheck="false" placeholder="Loading cosplay prompt…" disabled></textarea>
+<div class="editor-actions"><button id="copyChatgptPrompt" disabled>Copy prompt</button><button id="resetChatgptPrompt" disabled>Reset prompt</button></div>
+<a class="button-link" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">Open ChatGPT ↗</a>
+<p class="editor-note">Download the JPEG, attach it in ChatGPT, paste the prompt, and send. The prompt requests an edited JPEG; ChatGPT controls the returned size and available format.</p>
+<p id="chatgptStatus" class="editor-status" role="status" aria-live="polite"></p>
+</section>
 </aside></div></div></dialog>
 </body></html>

@@ -312,6 +312,21 @@ For persistent saved edits, configure the edited-JPEG folder under `/storage`, f
 
 The **Edits** page provides a gallery of saved JPEGs with download and delete actions.
 
+## Export cosplay photos for ChatGPT
+
+In the RAW Editor, use **Export for ChatGPT** to prepare an sRGB JPEG with the current editor adjustments:
+
+1. Choose **12, 15, or 18 MP** (default: 15 MP) and click **Prepare JPEG for ChatGPT**.
+2. Click **Download ChatGPT JPEG**. The copy is saved in the configured edits folder and also appears in **Edits**.
+3. Review the reusable cosplay editing prompt and click **Copy prompt**. You can customize it; your browser remembers the prompt. **Reset prompt** restores the standard version.
+4. Click **Open ChatGPT**, attach the downloaded JPEG, paste the prompt, and send.
+
+Exports retain the aspect ratio and never upscale smaller photos. They are limited to the selected megapixel budget and 19 MB, with JPEG quality reduced only when needed. Source EXIF, GPS, and other source metadata are omitted; an sRGB color profile is embedded. The original RAW remains untouched.
+
+The standard prompt requests a photorealistic cosplay retouch that preserves identity, expression, pose, costume, makeup, and props, and asks ChatGPT to generate a finished image and downloadable JPEG. ChatGPT controls its native output resolution and available file format; a 15 MP input does not guarantee a 15 MP edited output. If JPEG conversion is available in ChatGPT, the prompt asks for it; otherwise it asks for the generated image in its available format.
+
+This is a manual upload workflow using your ChatGPT account. RAW Catalog makes no OpenAI API requests and does not automatically upload photos or import edited results.
+
 ---
 
 # Gear database
