@@ -11,6 +11,7 @@ from sqlalchemy import select, func, or_, text
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 from app.db import Session, Photo, Scan, Setting, Account, engine
+from app.login_limits import trusted_proxy_networks, client_address, reserve_login_attempt
 from app.imaging import cache_file, make_preview
 from app.editor import (normalize_settings as normalize_editor_settings, render_preview as render_editor_preview,
                         auto_settings as auto_editor_settings, save_jpeg as save_editor_jpeg,
@@ -152,6 +153,7 @@ def create_app():
     secret = os.environ.get('SECRET_KEY')
     if not secret or len(secret) < 32:
         raise RuntimeError('Set SECRET_KEY (32+ characters)')
+    trusted_proxies = trusted_proxy_networks(os.environ.get('TRUSTED_PROXY_CIDRS', ''))
     app.config.update(SECRET_KEY=secret, SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Strict',
                       SESSION_COOKIE_SECURE=os.environ.get('COOKIE_SECURE', 'false').lower() == 'true',
                       MAX_CONTENT_LENGTH=16384)
@@ -238,6 +240,14 @@ def create_app():
 
     @app.post('/api/login')
     def login():
+        address = client_address(request.remote_addr, request.headers.get('X-Forwarded-For'), trusted_proxies)
+        retry_after = reserve_login_attempt(address, secret)
+        if retry_after:
+            response = jsonify(error=f'Too many sign-in attempts. Try again in {retry_after} seconds.',
+                               retry_after=retry_after)
+            response.status_code = 429
+            response.headers['Retry-After'] = str(retry_after)
+            return response
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
             abort(400, 'Login must be an object')

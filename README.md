@@ -233,6 +233,21 @@ When using HTTPS through a reverse proxy:
 COOKIE_SECURE='true'
 ```
 
+Login accepts at most **5 attempts per client IP per 60 seconds**, and **20 attempts across the catalog per 60 seconds** to limit distributed guessing of its single account. Both successful and failed attempts count; changing the username, clearing cookies, or restarting the web container does not reset the budget. Excess attempts receive HTTP 429 with a `Retry-After` header and a wait message on the login page. Waiting requests do not extend the cooldown. Existing signed-in sessions keep working.
+
+The counters are stored in the existing database and shared by all web processes. Client addresses are stored as keyed hashes, and stale client counters are removed automatically. No new service is required.
+
+Behind a reverse proxy, set `TRUSTED_PROXY_CIDRS` in `.env` to the proxy's actual IP address as seen by the web container, or a narrow, controlled CIDR range. The proxy must overwrite or append the real connection address to `X-Forwarded-For`. Only explicitly trusted proxy hops can supply client addresses; forwarded headers from other connections are ignored. Never trust arbitrary public clients or an entire untrusted network. By default this setting is empty, so all visitors through the same proxy share its 5-attempt budget until you configure it. Do not copy an example IP without checking your deployment.
+
+These limits reduce guessing and password-check workload. A distributed attacker can still temporarily consume the catalog-wide budget; proxy rate limiting or an access gateway adds protection before requests reach the app. HTTPS-only access and `COOKIE_SECURE='true'` remain necessary.
+
+To deploy only web changes while keeping the worker running, build the new image and recreate only the web container:
+
+```bash
+docker compose build web
+docker compose up -d --no-deps web
+```
+
 ---
 
 # Library

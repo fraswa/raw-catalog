@@ -68,6 +68,14 @@ class Account(Base):
     session_version: Mapped[str] = mapped_column(String(64))
 
 
+class LoginLimit(Base):
+    """Shared login budgets; client addresses are stored as keyed hashes."""
+    __tablename__ = 'login_limits'
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    window_start: Mapped[datetime] = mapped_column(DateTime, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+
+
 engine = create_engine(os.environ.get('DATABASE_URL', 'sqlite:////tmp/raw-catalog-dev.db'), pool_pre_ping=True)
 Session = sessionmaker(engine, expire_on_commit=False)
 

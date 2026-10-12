@@ -10,6 +10,7 @@ x-app: &app
     CACHE_DIR: /data/cache
     EXTERNAL_STORAGE_ROOT: /storage
     COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
     PREVIEW_EDGE: ${PREVIEW_EDGE:-2560}
   security_opt:
     - no-new-privileges:true
