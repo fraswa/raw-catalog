@@ -25,17 +25,23 @@ for path in (photo_path, storage_path):
         parser.error('Use mount paths without quotes or newlines')
 if Path('.env').exists():
     parser.error('.env already exists; edit it directly to preserve your database passwords')
-password = getpass.getpass('Choose catalog password (12+ characters): ')
-if len(password) < 12 or any(c in password for c in "\r\n'"):
-    parser.error('Password must have 12+ characters and no single quotes or newlines')
-if password != getpass.getpass('Confirm password: '):
-    parser.error('Passwords do not match')
+try:
+    password = getpass.getpass('Choose an initial admin password (12–1024 characters): ')
+    if not 12 <= len(password) <= 1024:
+        parser.error('Admin password must contain 12–1024 characters')
+    if any(c in password for c in "\r\n'"):
+        parser.error('Use an initial password without single quotes or newlines for .env compatibility')
+    if getpass.getpass('Confirm admin password: ') != password:
+        parser.error('Passwords do not match')
+except (EOFError, KeyboardInterrupt):
+    parser.error('Admin password setup cancelled; no .env was written')
 values = {'PHOTO_PATH':str(photo_path), 'STORAGE_PATH':str(storage_path),
           'DB_PASSWORD':secrets.token_hex(24), 'DB_ROOT_PASSWORD':secrets.token_hex(24),
-          'SECRET_KEY':secrets.token_hex(32), 'CATALOG_PASSWORD':password, 'WEB_PORT':'8080',
+          'SECRET_KEY':secrets.token_hex(32), 'INITIAL_ADMIN_PASSWORD':password, 'WEB_PORT':'8080',
           'BIND_IP':'0.0.0.0', 'COOKIE_SECURE':'false', 'PREVIEW_EDGE':'2560'}
 fd = os.open('.env', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 with os.fdopen(fd,'w') as f:
     for key,value in values.items():
         f.write(f"{key}='{value}'\n")
 print('Configuration saved. Run: docker compose up -d --build')
+print('Sign in as admin with the password you chose. Change the account in Settings.')

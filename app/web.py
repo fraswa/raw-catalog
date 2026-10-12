@@ -6,10 +6,11 @@ import secrets
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
-from flask import Flask, request, jsonify, session, send_file, abort
+from flask import Flask, request, jsonify, session, send_file, abort, g
 from sqlalchemy import select, func, or_, text
 from werkzeug.exceptions import HTTPException
-from app.db import Session, Photo, Scan, Setting, engine
+from werkzeug.security import check_password_hash, generate_password_hash
+from app.db import Session, Photo, Scan, Setting, Account, engine
 from app.imaging import cache_file, make_preview
 from app.editor import (normalize_settings as normalize_editor_settings, render_preview as render_editor_preview,
                         auto_settings as auto_editor_settings, save_jpeg as save_editor_jpeg,
@@ -149,9 +150,8 @@ def resolve_original(path):
 def create_app():
     app = Flask(__name__, static_folder='static')
     secret = os.environ.get('SECRET_KEY')
-    password = os.environ.get('CATALOG_PASSWORD')
-    if not secret or len(secret) < 32 or not password or len(password) < 12:
-        raise RuntimeError('Set SECRET_KEY (32+ characters) and CATALOG_PASSWORD (12+ characters)')
+    if not secret or len(secret) < 32:
+        raise RuntimeError('Set SECRET_KEY (32+ characters)')
     app.config.update(SECRET_KEY=secret, SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Strict',
                       SESSION_COOKIE_SECURE=os.environ.get('COOKIE_SECURE', 'false').lower() == 'true',
                       MAX_CONTENT_LENGTH=16384)
@@ -159,7 +159,15 @@ def create_app():
     @app.before_request
     def security():
         if request.path.startswith('/api/') or request.path.startswith('/media/'):
-            if request.path not in ('/api/login', '/api/session') and not session.get('authenticated'):
+            g.account = None
+            if session.get('authenticated'):
+                with Session() as db:
+                    account = db.get(Account, 1) if session.get('account_id') == 1 else None
+                if account and session.get('auth_version') == account.session_version:
+                    g.account = account
+                else:
+                    session.clear()
+            if request.path not in ('/api/login', '/api/session') and g.account is None:
                 abort(401, 'Sign in to continue')
             if request.method in ('POST', 'DELETE', 'PUT', 'PATCH'):
                 token = session.get('csrf', '')
@@ -225,22 +233,71 @@ def create_app():
     def auth_session():
         if 'csrf' not in session:
             session['csrf'] = secrets.token_hex(32)
-        return jsonify(authenticated=bool(session.get('authenticated')), csrf=session['csrf'])
+        return jsonify(authenticated=g.account is not None, csrf=session['csrf'],
+                       username=g.account.username if g.account else None)
 
     @app.post('/api/login')
     def login():
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            abort(400, 'Login must be an object')
+        username = data.get('username', '')
         supplied = data.get('password', '')
-        if not isinstance(supplied, str) or not hmac.compare_digest(supplied.encode(), password.encode()):
-            abort(401, 'Incorrect password')
+        if (not isinstance(username, str) or not 1 <= len(username.strip()) <= 64
+                or not isinstance(supplied, str) or not 1 <= len(supplied) <= 1024):
+            abort(401, 'Incorrect username or password')
+        with Session() as db:
+            account = db.get(Account, 1)
+        if not account or not check_password_hash(account.password_hash, supplied) or username.strip() != account.username:
+            abort(401, 'Incorrect username or password')
         session.clear()
-        session.update(authenticated=True, csrf=secrets.token_hex(32))
-        return jsonify(csrf=session['csrf'])
+        session.update(authenticated=True, account_id=account.id, auth_version=account.session_version,
+                       csrf=secrets.token_hex(32))
+        return jsonify(csrf=session['csrf'], username=account.username)
 
     @app.post('/api/logout')
     def logout():
         session.clear()
         return jsonify(ok=True)
+
+    @app.get('/api/settings/account')
+    def account_settings():
+        return jsonify(username=g.account.username)
+
+    @app.put('/api/settings/account')
+    def change_account():
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            abort(400, 'Account settings must be an object')
+        username = data.get('username')
+        if (not isinstance(username, str) or not 1 <= len(username.strip()) <= 64
+                or not all(c.isalnum() or c in '._-' for c in username.strip())):
+            abort(400, 'Username must contain 1–64 letters, numbers, dots, underscores or hyphens')
+        username = username.strip()
+        current = data.get('current_password', '')
+        new_password = data.get('new_password', '')
+        if not isinstance(current, str) or not 1 <= len(current) <= 1024:
+            abort(400, 'Enter your current password')
+        if not isinstance(new_password, str) or (new_password and not 12 <= len(new_password) <= 1024):
+            abort(400, 'New password must contain 12–1024 characters')
+        confirmation = data.get('confirm_password', '')
+        if not isinstance(confirmation, str) or confirmation != new_password:
+            abort(400, 'New passwords do not match')
+        with Session.begin() as db:
+            account = db.scalar(select(Account).where(Account.id == 1).with_for_update())
+            if not account or session.get('auth_version') != account.session_version:
+                abort(401, 'Sign in to continue')
+            if not check_password_hash(account.password_hash, current):
+                abort(400, 'Current password is incorrect')
+            if account.username != username or new_password:
+                account.username = username
+                if new_password:
+                    account.password_hash = generate_password_hash(new_password)
+                account.session_version = secrets.token_hex(32)
+            version = account.session_version
+        # Keep this browser signed in and retain its CSRF token for Settings' other forms.
+        session['auth_version'] = version
+        return jsonify(username=username, csrf=session['csrf'])
 
     def date_arg(name):
         value = request.args.get(name, '').strip()

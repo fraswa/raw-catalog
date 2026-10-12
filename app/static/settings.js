@@ -14,6 +14,26 @@ async function api(url, options = {}) {
 }
 function showError(err) { $('settingsError').textContent = err.message; $('settingsError').hidden = false; }
 function clearError() { $('settingsError').hidden = true; }
+async function loadAccount() {
+  const data = await api('/api/settings/account');
+  $('accountUsername').value = data.username;
+}
+$('accountForm').onsubmit = async event => {
+  event.preventDefault();clearError();$('accountMessage').textContent='';
+  const password=$('accountNewPassword').value, confirmation=$('accountConfirmPassword').value;
+  if(password!==confirmation){$('accountMessage').textContent='New passwords do not match.';return;}
+  $('saveAccount').disabled=true;
+  try {
+    const data=await api('/api/settings/account',{method:'PUT',body:JSON.stringify({
+      username:$('accountUsername').value.trim(),current_password:$('accountCurrentPassword').value,
+      new_password:password,confirm_password:confirmation
+    })});
+    csrf=data.csrf;$('accountUsername').value=data.username;
+    for(const id of ['accountCurrentPassword','accountNewPassword','accountConfirmPassword'])$(id).value='';
+    $('accountMessage').textContent=`Account saved. You are signed in as ${data.username}.`;
+  } catch(err){showError(err);}
+  finally{$('saveAccount').disabled=false;}
+};
 function formatBytes(value) {
   if (!value) return '0 B';
   const units = ['B','KB','MB','GB','TB'];
@@ -125,4 +145,4 @@ $('purgePreviews').onclick = async () => {
 };
 $('cancelJob').onclick = async () => { clearError(); try { await api('/api/scan/cancel',{method:'POST'}); clearTimeout(timer); await pollJob(); } catch(err){showError(err);} };
 $('signOut').onclick = async () => { try { await api('/api/logout',{method:'POST'}); } finally { location.href='/'; } };
-(async()=>{try{const state=await api('/api/session');csrf=state.csrf;if(!state.authenticated){location.href='/';return;}$('settingsApp').hidden=false;await loadSettings();pollJob();}catch(err){showError(err);$('settingsApp').hidden=false;}})();
+(async()=>{try{const state=await api('/api/session');csrf=state.csrf;if(!state.authenticated){location.href='/';return;}$('settingsApp').hidden=false;await Promise.all([loadAccount(),loadSettings()]);pollJob();}catch(err){showError(err);$('settingsApp').hidden=false;}})();

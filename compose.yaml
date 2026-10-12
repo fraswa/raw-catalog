@@ -5,7 +5,7 @@ x-app: &app
   environment: &environment
     DATABASE_URL: mysql+pymysql://catalog:${DB_PASSWORD:?Run setup.py}@db:3306/rawcatalog?charset=utf8mb4
     SECRET_KEY: ${SECRET_KEY:?Run setup.py}
-    CATALOG_PASSWORD: ${CATALOG_PASSWORD:?Run setup.py}
+    INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
     PHOTO_ROOT: /photos
     CACHE_DIR: /data/cache
     EXTERNAL_STORAGE_ROOT: /storage

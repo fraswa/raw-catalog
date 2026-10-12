@@ -11,7 +11,8 @@ _temp = tempfile.TemporaryDirectory()
 _base = Path(_temp.name)
 os.environ['DATABASE_URL'] = 'sqlite:///' + str(_base / 'test.db')
 os.environ['SECRET_KEY'] = 'test-secret-key-with-more-than-thirty-two-characters'
-os.environ['CATALOG_PASSWORD'] = 'test-password-long'
+os.environ['INITIAL_ADMIN_PASSWORD'] = 'test-initial-password'
+
 os.environ['CACHE_DIR'] = str(_base / 'cache')
 os.environ['EXTERNAL_STORAGE_ROOT'] = str(_base / 'storage')
 os.environ['PREVIEW_EDGE'] = '2560'
@@ -36,7 +37,7 @@ def client():
     app = create_app(); app.config['TESTING'] = True
     client = app.test_client()
     token = client.get('/api/session').json['csrf']
-    response = client.post('/api/login', json={'password':'test-password-long'}, headers={'X-CSRF-Token':token})
+    response = client.post('/api/login', json={'username':'admin','password':'test-initial-password'}, headers={'X-CSRF-Token':token})
     client.csrf = response.json['csrf']
     return client
 
@@ -62,7 +63,7 @@ def test_auth_and_csrf():
     client = create_app().test_client()
     assert client.get('/api/photos').status_code == 401
     assert client.get('/media/1/preview').status_code == 401
-    assert client.post('/api/login',json={'password':'test-password-long'}).status_code == 403
+    assert client.post('/api/login',json={'username':'admin','password':'test-initial-password'}).status_code == 403
     token = client.get('/api/session').json['csrf']
     assert client.post('/api/login',json={'password':'wrong'},headers={'X-CSRF-Token':token}).status_code == 401
 

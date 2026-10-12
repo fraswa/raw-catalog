@@ -8,7 +8,8 @@ import pytest
 _temp = tempfile.TemporaryDirectory()
 os.environ.setdefault('DATABASE_URL', 'sqlite:///' + str(Path(_temp.name) / 'statistics-technical.db'))
 os.environ.setdefault('SECRET_KEY', 'test-secret-key-with-more-than-thirty-two-characters')
-os.environ.setdefault('CATALOG_PASSWORD', 'test-password-long')
+os.environ.setdefault('INITIAL_ADMIN_PASSWORD', 'test-initial-password')
+
 
 from app.db import Base, engine, Session, Photo, init_db
 from app.web import create_app
@@ -27,7 +28,7 @@ def client():
     app.config['TESTING'] = True
     client = app.test_client()
     token = client.get('/api/session').json['csrf']
-    response = client.post('/api/login', json={'password': 'test-password-long'},
+    response = client.post('/api/login', json={'username': 'admin', 'password': 'test-initial-password'},
                            headers={'X-CSRF-Token': token})
     client.csrf = response.json['csrf']
     return client

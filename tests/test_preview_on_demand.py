@@ -10,7 +10,8 @@ from PIL import Image
 _temp = tempfile.TemporaryDirectory()
 os.environ.setdefault('DATABASE_URL', 'sqlite:///' + str(Path(_temp.name) / 'preview-policy.db'))
 os.environ.setdefault('SECRET_KEY', 'test-secret-key-with-more-than-thirty-two-characters')
-os.environ.setdefault('CATALOG_PASSWORD', 'test-password-long')
+os.environ.setdefault('INITIAL_ADMIN_PASSWORD', 'test-initial-password')
+
 
 from app.db import Base, engine, Session, Photo, Scan, Setting, init_db
 from app import worker, imaging
@@ -31,7 +32,7 @@ def client():
     app.config['TESTING'] = True
     client = app.test_client()
     token = client.get('/api/session').json['csrf']
-    response = client.post('/api/login', json={'password': 'test-password-long'},
+    response = client.post('/api/login', json={'username': 'admin', 'password': 'test-initial-password'},
                            headers={'X-CSRF-Token': token})
     client.csrf = response.json['csrf']
     return client
@@ -324,6 +325,7 @@ def test_saved_edits_gallery_download_and_delete(client, tmp_path, monkeypatch):
     assert item['filename'] == saved.name
     downloaded = client.get(item['download_url'])
     assert downloaded.status_code == 200 and downloaded.data == b'jpeg-data'
+    downloaded.close()
     deleted = client.delete('/api/edits/sample%20edit.jpg', headers={'X-CSRF-Token': client.csrf})
     assert deleted.status_code == 200
     assert not saved.exists()

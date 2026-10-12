@@ -1,8 +1,11 @@
 import os
+import secrets
 from datetime import datetime, timezone
 from sqlalchemy import create_engine, String, Text, Integer, BigInteger, DateTime, JSON, Index, Boolean, text
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.exc import IntegrityError
+from werkzeug.security import generate_password_hash
 
 
 def now():
@@ -54,6 +57,15 @@ class Setting(Base):
     # MariaDB TEXT is limited to 64 KiB. Expanded statistics can easily exceed that,
     # so use LONGTEXT on MySQL/MariaDB while retaining normal TEXT elsewhere.
     value: Mapped[str] = mapped_column(Text().with_variant(LONGTEXT(), 'mysql'), default='')
+
+
+class Account(Base):
+    """The catalog's single login account (id 1)."""
+    __tablename__ = 'accounts'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    session_version: Mapped[str] = mapped_column(String(64))
 
 
 engine = create_engine(os.environ.get('DATABASE_URL', 'sqlite:////tmp/raw-catalog-dev.db'), pool_pre_ping=True)
@@ -108,3 +120,22 @@ def init_db():
     Base.metadata.create_all(engine)
     _upgrade_mysql_schema()
     _upgrade_sqlite_schema()
+    _ensure_account()
+
+
+def _ensure_account():
+    """Bootstrap once, including upgrades from the old catalog-password login."""
+    try:
+        with Session.begin() as db:
+            if db.get(Account, 1) is None:
+                password = os.environ.get('INITIAL_ADMIN_PASSWORD', '')
+                if not 12 <= len(password) <= 1024:
+                    raise RuntimeError('Set INITIAL_ADMIN_PASSWORD to 12–1024 characters in your private .env before first startup')
+                db.add(Account(id=1, username='admin',
+                               password_hash=generate_password_hash(password),
+                               session_version=secrets.token_hex(32)))
+    except IntegrityError:
+        # Another initializer may have inserted the singleton first.
+        with Session() as db:
+            if db.get(Account, 1) is None:
+                raise

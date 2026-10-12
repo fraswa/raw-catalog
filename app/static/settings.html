@@ -5,8 +5,20 @@
 <div id="settingsApp" hidden>
 <header><div class="brand"><span class="mark">R / C</span><div><strong>RAW Catalog</strong><span>Settings</span></div></div><div class="header-actions"><a class="button-link" href="/">Library</a><a class="button-link" href="/edits">Edits</a><a class="button-link" href="/indexer">Indexer</a><a class="button-link" href="/statistics">Statistics</a><a class="button-link" href="/catalog">Gear database</a><button id="signOut">Sign out</button></div></header>
 <main class="settings-main">
-<div class="title-row"><div><p class="eyebrow">SETTINGS</p><h1>Generated media storage</h1></div><span class="read-only">Originals remain read-only</span></div>
+<div class="title-row"><div><p class="eyebrow">SETTINGS</p><h1>Account and storage</h1></div><span class="read-only">Originals remain read-only</span></div>
 <div id="settingsError" class="error" role="alert" hidden></div>
+<section class="settings-card">
+<div class="settings-heading"><div><p class="eyebrow">ACCOUNT</p><h2>Username and password</h2></div></div>
+<p class="settings-copy">Change the account used to sign in to your catalog. Enter your current password to save changes.</p>
+<form id="accountForm" class="settings-form">
+<label for="accountUsername">Username</label><input id="accountUsername" name="username" type="text" maxlength="64" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+<label for="accountCurrentPassword" class="secondary-label">Current password</label><input id="accountCurrentPassword" name="current_password" type="password" maxlength="1024" autocomplete="current-password" required>
+<label for="accountNewPassword" class="secondary-label">New password</label><input id="accountNewPassword" name="new_password" type="password" minlength="12" maxlength="1024" autocomplete="new-password">
+<label for="accountConfirmPassword" class="secondary-label">Confirm new password</label><input id="accountConfirmPassword" name="confirm_password" type="password" maxlength="1024" autocomplete="new-password">
+<p class="hint">Leave both new-password fields empty to keep your password. New passwords need at least 12 characters. Other sessions will be signed out when the account changes.</p>
+<button id="saveAccount" class="primary" type="submit">Save account</button>
+<p id="accountMessage" class="action-message" role="status" aria-live="polite"></p>
+</form></section>
 <section class="settings-card">
 <div class="settings-heading"><div><p class="eyebrow">STORAGE ROOTS</p><h2>Container-visible storage</h2></div><span id="settingsState" class="state-pill">Ready</span></div>
 <p class="settings-copy">Use <code>/data/cache</code> for Docker-managed storage or <code>/storage</code> for a host folder, disk, SMB share, or NFS mount. The host path mapped to <code>/storage</code> is configured by <code>STORAGE_PATH</code> in <code>.env</code>.</p>
